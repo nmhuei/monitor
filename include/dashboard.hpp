@@ -3,14 +3,15 @@
  *
  * Two view modes:
  *  - OVERVIEW: unified frame with sparkline graphs, host table, connection log
- *  - DETAIL:   per-host resource detail view with individual graphs + history
+ *  - DETAIL:   per-host resource detail with per-core CPU bars + RAM/DISK
+ * graphs
  *
  * Key bindings:
  *  Tab        → enter detail / next host
  *  Shift+Tab  → previous host
  *  Esc / Backspace → return to overview
  *  Q          → quit
- *  ↑↓ PgUp/Dn → scroll log (overview) or history (detail)
+ *  ↑↓ PgUp/Dn → scroll log (overview) or cores (detail)
  */
 #pragma once
 #include "metrics_store.hpp"
@@ -28,7 +29,7 @@
 namespace monitor::ui {
 
 // ── View modes ──────────────────────────────────────────────────────────────
-enum class ViewMode { OVERVIEW, DETAIL };
+enum class ViewMode { OVERVIEW, DETAIL, HELP, HISTORY };
 
 enum Color {
   C_NORMAL = 1,
@@ -93,7 +94,6 @@ static int pctColor(float pct, const std::string &host, const Thresholds &th,
 static const char *SPARK_CHARS[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 static const char *BLOCK_FULL = "█";
 static const char *BLOCK_EMPTY = "░";
-
 static const char *BOX_TL = "╔";
 static const char *BOX_TR = "╗";
 static const char *BOX_BL = "╚";
@@ -102,7 +102,6 @@ static const char *BOX_H = "═";
 static const char *BOX_V = "║";
 static const char *BOX_LT = "╠";
 static const char *BOX_RT = "╣";
-
 static const char *SYM_ONLINE = "●";
 static const char *SYM_WARN = "◐";
 static const char *SYM_DIAMOND = "◈";
@@ -142,8 +141,6 @@ public:
       erase();
       refresh();
     }
-
-    // Build sorted hosts list (shared between modes)
     sortedHosts_ = hosts;
     std::sort(sortedHosts_.begin(), sortedHosts_.end(),
               [](const HostState &a, const HostState &b) {
@@ -153,100 +150,139 @@ public:
                   return ao;
                 return a.name < b.name;
               });
-
     handleInput();
-
     erase();
 
-    if (viewMode_ == ViewMode::DETAIL && !sortedHosts_.empty()) {
+    if (cmdErrorTimer_ > 0)
+      cmdErrorTimer_--;
+
+    if (viewMode_ == ViewMode::HELP)
+      renderHelp();
+    else if (viewMode_ == ViewMode::HISTORY && !sortedHosts_.empty())
+      renderHistoryView();
+    else if (viewMode_ == ViewMode::DETAIL && !sortedHosts_.empty())
       renderDetailView(thresh);
-    } else {
+    else {
       viewMode_ = ViewMode::OVERVIEW;
       renderOverview(log, thresh);
     }
+
+    // Command bar overlay (bottom)
+    if (cmdMode_)
+      renderCmdBar();
+    // Error message overlay
+    else if (cmdErrorTimer_ > 0 && !cmdError_.empty())
+      renderCmdError();
 
     refresh();
   }
 
 private:
   int rows_ = 24, cols_ = 80;
-  int logScroll_ = 0;
-  int histScroll_ = 0;
-
+  int logScroll_ = 0, histScroll_ = 0;
   ViewMode viewMode_ = ViewMode::OVERVIEW;
+  ViewMode prevMode_ = ViewMode::OVERVIEW;
   int selectedIdx_ = 0;
-
   std::vector<HostState> sortedHosts_;
+  int hdrY_ = 0, graphY_ = 0, graphH_ = 0, tableY_ = 0, tableH_ = 0, logY_ = 0,
+      logH_ = 0;
 
-  // Layout (overview)
-  int hdrY_ = 0, graphY_ = 0, graphH_ = 0;
-  int tableY_ = 0, tableH_ = 0;
-  int logY_ = 0, logH_ = 0;
+  // Command input state
+  bool cmdMode_ = false;
+  std::string cmdBuf_;
+  std::string cmdError_;
+  int cmdErrorTimer_ = 0;
+  std::string historyHost_; // for /history view
 
-  // ── Input handling ──────────────────────────────────────────────────────
+  // ── Input ─────────────────────────────────────────────────────────────────
   void handleInput() {
     int ch = getch();
+    if (ch == ERR)
+      return;
     int hostCount = (int)sortedHosts_.size();
 
+    // ── Command input mode ──
+    if (cmdMode_) {
+      if (ch == 27) {
+        cmdMode_ = false;
+        cmdBuf_.clear();
+        halfdelay(2);
+      } else if (ch == '\n' || ch == KEY_ENTER) {
+        executeCmd();
+        cmdMode_ = false;
+        halfdelay(2);
+      } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+        if (!cmdBuf_.empty())
+          cmdBuf_.pop_back();
+      } else if (ch >= 32 && ch < 127) {
+        cmdBuf_ += (char)ch;
+      }
+      return;
+    }
+
+    // ── Normal mode ──
     switch (ch) {
     case 'q':
     case 'Q':
       endwin();
       exit(0);
-
-    case '\t': // Tab → next host / enter detail
+    case '/':
+      cmdMode_ = true;
+      cmdBuf_.clear();
+      cmdError_.clear();
+      cbreak(); // responsive typing
+      break;
+    case '\t':
       if (hostCount > 0) {
         if (viewMode_ == ViewMode::OVERVIEW) {
           viewMode_ = ViewMode::DETAIL;
           histScroll_ = 0;
-        } else {
+        } else if (viewMode_ == ViewMode::DETAIL) {
           selectedIdx_ = (selectedIdx_ + 1) % hostCount;
           histScroll_ = 0;
         }
       }
       break;
-
-    case KEY_BTAB: // Shift+Tab → previous host
+    case KEY_BTAB:
       if (hostCount > 0) {
         if (viewMode_ == ViewMode::OVERVIEW) {
           viewMode_ = ViewMode::DETAIL;
           selectedIdx_ = hostCount - 1;
           histScroll_ = 0;
-        } else {
+        } else if (viewMode_ == ViewMode::DETAIL) {
           selectedIdx_ = (selectedIdx_ - 1 + hostCount) % hostCount;
           histScroll_ = 0;
         }
       }
       break;
-
-    case 27: // Esc
+    case 27:
     case KEY_BACKSPACE:
     case 127:
-      if (viewMode_ == ViewMode::DETAIL) {
+      if (viewMode_ == ViewMode::HELP || viewMode_ == ViewMode::HISTORY)
+        viewMode_ = prevMode_;
+      else if (viewMode_ == ViewMode::DETAIL)
         viewMode_ = ViewMode::OVERVIEW;
-      }
       break;
-
     case KEY_UP:
-      if (viewMode_ == ViewMode::DETAIL)
+      if (viewMode_ == ViewMode::DETAIL || viewMode_ == ViewMode::HISTORY)
         histScroll_ = std::max(0, histScroll_ - 1);
       else
         logScroll_ = std::max(0, logScroll_ - 1);
       break;
     case KEY_DOWN:
-      if (viewMode_ == ViewMode::DETAIL)
+      if (viewMode_ == ViewMode::DETAIL || viewMode_ == ViewMode::HISTORY)
         histScroll_++;
       else
         logScroll_++;
       break;
     case KEY_PPAGE:
-      if (viewMode_ == ViewMode::DETAIL)
+      if (viewMode_ == ViewMode::DETAIL || viewMode_ == ViewMode::HISTORY)
         histScroll_ = std::max(0, histScroll_ - 8);
       else
         logScroll_ = std::max(0, logScroll_ - 8);
       break;
     case KEY_NPAGE:
-      if (viewMode_ == ViewMode::DETAIL)
+      if (viewMode_ == ViewMode::DETAIL || viewMode_ == ViewMode::HISTORY)
         histScroll_ += 8;
       else
         logScroll_ += 8;
@@ -254,15 +290,103 @@ private:
     default:
       break;
     }
-
-    // Clamp selectedIdx
     if (hostCount > 0)
       selectedIdx_ = std::clamp(selectedIdx_, 0, hostCount - 1);
     else
       selectedIdx_ = 0;
   }
 
-  // ── OVERVIEW MODE ───────────────────────────────────────────────────────
+  // ── Command execution ─────────────────────────────────────────────────────
+  void executeCmd() {
+    std::string cmd = cmdBuf_;
+    cmdBuf_.clear();
+    // trim leading/trailing spaces
+    while (!cmd.empty() && cmd.front() == ' ')
+      cmd.erase(cmd.begin());
+    while (!cmd.empty() && cmd.back() == ' ')
+      cmd.pop_back();
+    if (cmd.empty())
+      return;
+
+    // Parse command and args
+    std::vector<std::string> parts;
+    std::string cur;
+    for (char c : cmd) {
+      if (c == ' ') {
+        if (!cur.empty()) {
+          parts.push_back(cur);
+          cur.clear();
+        }
+      } else
+        cur += c;
+    }
+    if (!cur.empty())
+      parts.push_back(cur);
+    if (parts.empty())
+      return;
+
+    std::string verb = parts[0];
+    // normalize: remove leading /
+    if (!verb.empty() && verb[0] == '/')
+      verb = verb.substr(1);
+
+    if (verb == "help" || verb == "h") {
+      prevMode_ = viewMode_;
+      viewMode_ = ViewMode::HELP;
+    } else if (verb == "viewer" || verb == "view" || verb == "v") {
+      if (parts.size() < 2) {
+        cmdError_ = "Usage: /viewer <host>";
+        cmdErrorTimer_ = 20;
+        return;
+      }
+      std::string target = parts[1];
+      int idx = findHost(target);
+      if (idx < 0) {
+        cmdError_ = "Host not found: " + target;
+        cmdErrorTimer_ = 20;
+        return;
+      }
+      selectedIdx_ = idx;
+      viewMode_ = ViewMode::DETAIL;
+      histScroll_ = 0;
+    } else if (verb == "history" || verb == "hist") {
+      if (parts.size() < 2) {
+        cmdError_ = "Usage: /history <host>";
+        cmdErrorTimer_ = 20;
+        return;
+      }
+      std::string target = parts[1];
+      int idx = findHost(target);
+      if (idx < 0) {
+        cmdError_ = "Host not found: " + target;
+        cmdErrorTimer_ = 20;
+        return;
+      }
+      selectedIdx_ = idx;
+      historyHost_ = target;
+      prevMode_ = viewMode_;
+      viewMode_ = ViewMode::HISTORY;
+      histScroll_ = 0;
+    } else {
+      cmdError_ = "Unknown command: /" + verb + "  (try /help)";
+      cmdErrorTimer_ = 20;
+    }
+  }
+
+  int findHost(const std::string &name) {
+    for (int i = 0; i < (int)sortedHosts_.size(); i++) {
+      if (sortedHosts_[i].name == name)
+        return i;
+      // partial match
+      if (sortedHosts_[i].name.find(name) != std::string::npos)
+        return i;
+    }
+    return -1;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── OVERVIEW MODE ─────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
   void renderOverview(const std::vector<LogEvent> &log,
                       const Thresholds &thresh) {
     calcOverviewLayout();
@@ -278,7 +402,6 @@ private:
     graphY_ = 2;
     graphH_ = 4;
     int graphEnd = graphY_ + 1 + graphH_;
-
     tableY_ = graphEnd;
     int hostCount = std::max(1, (int)sortedHosts_.size());
     tableH_ = 2 + hostCount;
@@ -286,7 +409,6 @@ private:
       tableH_ = rows_ / 3;
     if (tableH_ < 3)
       tableH_ = 3;
-
     int tableEnd = tableY_ + 1 + tableH_;
     logY_ = tableEnd;
     logH_ = rows_ - logY_ - 1;
@@ -294,30 +416,22 @@ private:
       logH_ = 2;
   }
 
-  // ── Outer Frame ─────────────────────────────────────────────────────────
   void drawOuterFrame() {
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
-
     mvaddstr(0, 0, BOX_TL);
     for (int i = 1; i < cols_ - 1; i++)
       addstr(BOX_H);
     addstr(BOX_TR);
-
     mvaddstr(rows_ - 1, 0, BOX_BL);
     for (int i = 1; i < cols_ - 1; i++)
       addstr(BOX_H);
     addstr(BOX_BR);
-
     for (int r = 1; r < rows_ - 1; r++) {
       mvaddstr(r, 0, BOX_V);
       mvaddstr(r, cols_ - 1, BOX_V);
     }
-
-    // Separator after header
     drawHSep(graphY_);
-    // Separator after graphs
     drawHSep(tableY_);
-    // Separator after table header
     int ths = tableY_ + 2;
     if (ths < rows_ - 1) {
       mvaddstr(ths, 0, BOX_LT);
@@ -325,9 +439,7 @@ private:
         mvaddch(ths, i, '-');
       mvaddstr(ths, cols_ - 1, BOX_RT);
     }
-    // Separator before log
     drawHSep(logY_);
-
     attroff(COLOR_PAIR(C_BOX) | A_BOLD);
   }
 
@@ -340,30 +452,25 @@ private:
     addstr(BOX_RT);
   }
 
-  // ── Header ──────────────────────────────────────────────────────────────
   void renderHeader(const char *hint) {
     int y = 1;
     attron(COLOR_PAIR(C_HEADER) | A_BOLD);
     for (int i = 1; i < cols_ - 1; i++)
       mvaddch(y, i, ' ');
-
     std::string ts = fmtTime(time(nullptr));
     mvaddstr(y, 2, ts.c_str());
-
     std::string title =
         std::string(SYM_DIAMOND) + " DISTRIBUTED SYSTEM MONITOR " + SYM_DIAMOND;
     int tx = (cols_ - (int)title.size()) / 2;
     if (tx > 12)
       mvaddstr(y, tx, title.c_str());
-
     int hintLen = (int)strlen(hint);
     if (cols_ - hintLen - 3 > 0)
       mvaddstr(y, cols_ - hintLen - 2, hint);
-
     attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
   }
 
-  // ── Sparkline Graphs (overview — aggregated) ────────────────────────────
+  // ── Sparkline Graphs (aggregated) ─────────────────────────────────────────
   void renderGraphs(const Thresholds &th) {
     size_t maxLen = 0;
     int online = 0;
@@ -400,11 +507,9 @@ private:
       ad /= online;
     }
 
-    int innerW = cols_ - 2;
-    int panelW = innerW / 3;
-    int panelWLast = innerW - panelW * 2;
+    int innerW = cols_ - 2, panelW = innerW / 3,
+        panelWLast = innerW - panelW * 2;
     int startY = graphY_ + 1;
-
     struct G {
       const char *t;
       std::vector<float> &v;
@@ -428,11 +533,9 @@ private:
           mvaddstr(r, x0, BOX_V);
         attroff(COLOR_PAIR(C_BOX) | A_BOLD);
       }
-      int cx = (x0 > 1) ? x0 + 1 : x0;
-      int cw = (x0 > 1) ? pw - 1 : pw;
+      int cx = (x0 > 1) ? x0 + 1 : x0, cw = (x0 > 1) ? pw - 1 : pw;
       drawSparkTitle(startY, cx, cw, x0 + pw, g.t);
       drawSparkline(startY + 1, cx, cw - 1, 2, g.v, g.m, th);
-      // Avg value
       char buf[16];
       snprintf(buf, sizeof(buf), "%5.1f%%", g.a);
       int co = pctColor(g.a, "", th, g.m);
@@ -442,7 +545,6 @@ private:
     }
   }
 
-  // ── Sparkline drawing helpers ───────────────────────────────────────────
   void drawSparkTitle(int y, int x, int w, int endX, const char *title) {
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
     mvaddstr(y, x, LINE_H);
@@ -469,20 +571,18 @@ private:
       vals.insert(vals.begin(), 0.0f);
     if ((int)vals.size() > w)
       vals.erase(vals.begin(), vals.begin() + (int)vals.size() - w);
-
     for (int row = 0; row < rows; row++) {
       int ry = y + row;
       move(ry, x);
       for (int i = 0; i < w; i++) {
         float pct = std::clamp(vals[i], 0.0f, 100.0f);
         float eff;
-        if (rows == 1) {
+        if (rows == 1)
           eff = pct;
-        } else if (row == 0) {
+        else if (row == 0)
           eff = (pct > 50.0f) ? (pct - 50.0f) * 2.0f : 0.0f;
-        } else {
+        else
           eff = std::min(pct, 50.0f) * 2.0f;
-        }
         int level = std::clamp((int)(eff / 100.0f * 8.0f), 0, 7);
         int co = pctColor(pct, "", th, metric);
         attron(COLOR_PAIR(co));
@@ -495,7 +595,39 @@ private:
     }
   }
 
-  // ── Host Table ──────────────────────────────────────────────────────────
+  // ── Scrollbar helper ──────────────────────────────────────────────────────
+  // Draws a vertical scrollbar on column `x`, from row `y0` to `y1`.
+  // `scroll` = current scroll offset, `visible` = visible rows, `total` = total
+  // items.
+  void drawScrollbar(int x, int y0, int y1, int scroll, int visible,
+                     int total) {
+    int trackH = y1 - y0 + 1;
+    if (trackH < 2 || total <= visible)
+      return;
+
+    // Thumb size and position
+    int thumbH = std::max(1, trackH * visible / total);
+    int thumbPos = (total - visible > 0)
+                       ? (trackH - thumbH) * scroll / (total - visible)
+                       : 0;
+    thumbPos = std::clamp(thumbPos, 0, trackH - thumbH);
+
+    for (int i = 0; i < trackH; i++) {
+      int ry = y0 + i;
+      bool isThumb = (i >= thumbPos && i < thumbPos + thumbH);
+      if (isThumb) {
+        attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+        mvaddstr(ry, x, "┃");
+        attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+      } else {
+        attron(COLOR_PAIR(C_GRAY) | A_DIM);
+        mvaddstr(ry, x, "│");
+        attroff(COLOR_PAIR(C_GRAY) | A_DIM);
+      }
+    }
+  }
+
+  // ── Host Table ────────────────────────────────────────────────────────────
   void renderTable(const Thresholds &th) {
     int innerW = cols_ - 2;
     attron(COLOR_PAIR(C_CYAN) | A_BOLD);
@@ -508,8 +640,7 @@ private:
       cBar = 6;
     int cPct = 5, cStatus = 8;
 
-    int hy = tableY_ + 1;
-    int x = 2;
+    int hy = tableY_ + 1, x = 2;
     attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
     mvprintw(hy, x, "%-*s", cHost, "HOST");
     x += cHost + 1;
@@ -521,8 +652,7 @@ private:
     mvprintw(hy, innerW - cStatus, "STATUS");
     attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
 
-    int dataY = tableY_ + 3;
-    int maxRows = logY_ - dataY;
+    int dataY = tableY_ + 3, maxRows = logY_ - dataY;
     if (maxRows < 0)
       maxRows = 0;
 
@@ -533,8 +663,7 @@ private:
       x = 2;
       bool off = (h.status == HostStatus::OFFLINE);
 
-      // Highlight selected host with marker
-      if (idx == selectedIdx_ && viewMode_ == ViewMode::OVERVIEW) {
+      if (idx == selectedIdx_) {
         attron(COLOR_PAIR(C_CYAN) | A_BOLD);
         mvaddstr(ry, 1, ">");
         attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
@@ -576,8 +705,7 @@ private:
       drawBar(h.ram, 'r', bx + cBar + cPct + 1);
       drawBar(h.disk, 'd', bx + (cBar + cPct + 1) * 2);
 
-      const char *sym;
-      const char *label;
+      const char *sym, *label;
       int sc;
       switch (h.status) {
       case HostStatus::ALERT:
@@ -604,7 +732,7 @@ private:
     }
   }
 
-  // ── Connection Log ──────────────────────────────────────────────────────
+  // ── Connection Log ────────────────────────────────────────────────────────
   void renderLog(const std::vector<LogEvent> &log, const Thresholds &th) {
     std::string logTitle = " CONNECTION LOG  [↑↓/PgUp/PgDn to scroll] ";
     int ltx = (cols_ - (int)logTitle.size()) / 2;
@@ -614,8 +742,7 @@ private:
     mvaddstr(logY_, ltx, logTitle.c_str());
     attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
 
-    int contentY = logY_ + 1;
-    int innerH = logH_;
+    int contentY = logY_ + 1, innerH = logH_;
     if (innerH <= 0)
       return;
 
@@ -706,18 +833,24 @@ private:
     attron(COLOR_PAIR(C_GRAY) | A_DIM);
     mvaddstr(rows_ - 1, cols_ - (int)strlen(si) - 2, si);
     attroff(COLOR_PAIR(C_GRAY) | A_DIM);
+
+    // Scrollbar on right edge of log panel
+    if ((int)log.size() > innerH) {
+      drawScrollbar(cols_ - 2, contentY, contentY + innerH - 1, logScroll_,
+                    innerH, (int)log.size());
+    }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // ── DETAIL VIEW MODE ─────────────────────────────────────────────────
-  // ═══════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── DETAIL VIEW MODE ──────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
   void renderDetailView(const Thresholds &th) {
     if (selectedIdx_ >= (int)sortedHosts_.size())
       return;
     const auto &host = sortedHosts_[selectedIdx_];
     int hostCount = (int)sortedHosts_.size();
 
-    // Draw full-screen frame
+    // Full-screen frame
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
     mvaddstr(0, 0, BOX_TL);
     for (int i = 1; i < cols_ - 1; i++)
@@ -740,25 +873,22 @@ private:
       mvaddch(y, i, ' ');
     std::string ts = fmtTime(time(nullptr));
     mvaddstr(y, 2, ts.c_str());
-
     std::string dtitle = std::string(SYM_DIAMOND) +
                          " HOST DETAIL: " + host.name + " " + SYM_DIAMOND;
     int dtx = (cols_ - (int)dtitle.size()) / 2;
     if (dtx > 12)
       mvaddstr(y, dtx, dtitle.c_str());
-
     const char *dhint = "[Tab]Next [Esc]Back [Q]Quit";
     int dhLen = (int)strlen(dhint);
     if (cols_ - dhLen - 3 > 0)
       mvaddstr(y, cols_ - dhLen - 2, dhint);
     attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
 
-    // Separator after header
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
     drawHSep(2);
     attroff(COLOR_PAIR(C_BOX) | A_BOLD);
 
-    // Check offline
+    // Offline
     if (host.status == HostStatus::OFFLINE) {
       attron(COLOR_PAIR(C_GRAY) | A_DIM);
       std::string offMsg = "--- " + host.name + " is OFFLINE ---";
@@ -768,253 +898,530 @@ private:
       return;
     }
 
-    // Collect per-host history
-    std::vector<float> cpuH, ramH, diskH;
-    for (auto &s : host.history) {
-      cpuH.push_back(s.cpu);
-      ramH.push_back(s.ram);
-      diskH.push_back(s.disk);
-    }
-
-    // Layout starts after header separator (row 0=top, 1=header, 2=sep)
-    // row 0: top border, row 1: header, row 2: sep
-    // then graphs, then seps, info, history
-
-    int curY = 3; // start after header separator
-
-    // ── CPU graph ──
+    int curY = 3;
     int graphW = cols_ - 4;
     if (graphW < 10)
       graphW = 10;
 
-    struct MetricInfo {
-      const char *name;
-      std::vector<float> &hist;
-      float current;
-      char metric;
-      int color;
-    };
-    std::vector<MetricInfo> metrics = {
-        {"CPU", cpuH, host.cpu, 'c', C_GREEN},
-        {"RAM", ramH, host.ram, 'r', C_CYAN},
-        {"DISK", diskH, host.disk, 'd', C_YELLOW},
-    };
+    // ── CPU OVERVIEW sparkline ──
+    {
+      std::vector<float> cpuH;
+      for (auto &s : host.history)
+        cpuH.push_back(s.cpu);
 
-    for (auto &m : metrics) {
-      if (curY >= rows_ - 2)
-        break;
+      attron(COLOR_PAIR(C_BOX) | A_BOLD);
+      drawHSep(curY);
+      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+      curY++;
+      if (curY < rows_ - 2) {
+        drawMetricTitle(curY, "CPU OVERVIEW", host.cpu, host.name, th, 'c');
+        curY++;
+      }
+      if (curY < rows_ - 2) {
+        drawSparkline(curY, 2, graphW, 1, cpuH, 'c', th);
+        curY++;
+      }
+    }
 
-      // Separator line
+    // ── PROCESSORS (per-core CPU bars) ──
+    if (curY < rows_ - 2 && !host.cores.empty()) {
       attron(COLOR_PAIR(C_BOX) | A_BOLD);
       drawHSep(curY);
       attroff(COLOR_PAIR(C_BOX) | A_BOLD);
 
-      // Title with percentage: ─ CPU ──────────── 87.3% ──
+      char coreTitle[48];
+      snprintf(coreTitle, sizeof(coreTitle), " PROCESSORS (%d cores) ",
+               (int)host.cores.size());
+      attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+      mvaddstr(curY, 3, coreTitle);
+      attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
       curY++;
-      if (curY >= rows_ - 2)
-        break;
-      {
-        attron(COLOR_PAIR(C_BOX) | A_BOLD);
-        mvaddstr(curY, 2, LINE_H);
-        addstr(" ");
-        attroff(COLOR_PAIR(C_BOX) | A_BOLD);
 
-        attron(COLOR_PAIR(C_CYAN) | A_BOLD);
-        addstr(m.name);
-        attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+      int barMaxW = cols_ - 24;
+      if (barMaxW < 10)
+        barMaxW = 10;
 
-        attron(COLOR_PAIR(C_BOX) | A_BOLD);
-        addstr(" ");
-        int cur = getcurx(stdscr);
-        char pctBuf[16];
-        snprintf(pctBuf, sizeof(pctBuf), " %5.1f%% ", m.current);
-        int pctPos = cols_ - (int)strlen(pctBuf) - 3;
-        for (int i = cur; i < pctPos; i++)
-          addstr(LINE_H);
-        attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+      // Reserve space for RAM + DISK + INFO below
+      int reserveBelow = 9; // RAM(3) + DISK(3) + INFO(3)
+      int availCoreRows = rows_ - curY - reserveBelow - 1;
+      if (availCoreRows < 2)
+        availCoreRows = 2;
 
-        int co = pctColor(m.current, host.name, th, m.metric);
+      int totalCores = (int)host.cores.size();
+      int maxCoreScroll = std::max(0, totalCores - availCoreRows);
+      histScroll_ = std::clamp(histScroll_, 0, maxCoreScroll);
+
+      int startCore = histScroll_;
+      int showCores = std::min(totalCores - startCore, availCoreRows);
+
+      for (int ci = 0; ci < showCores; ci++) {
+        int coreIdx = startCore + ci;
+        if (curY >= rows_ - reserveBelow)
+          break;
+        float val = host.cores[coreIdx];
+        int co = pctColor(val, host.name, th, 'c');
+
+        // Label
+        attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+        char lbl[24];
+        snprintf(lbl, sizeof(lbl), " core %2d ", coreIdx);
+        mvaddstr(curY, 2, lbl);
+        attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+
+        int barStart = 11;
+        int barW = barMaxW;
+        int filled = std::clamp((int)(val / 100.0f * barW), 0, barW);
+
         attron(COLOR_PAIR(co) | A_BOLD);
+        move(curY, barStart);
+        for (int b = 0; b < filled; b++)
+          addstr(BLOCK_FULL);
+        attroff(COLOR_PAIR(co) | A_BOLD);
+
+        attron(COLOR_PAIR(C_GRAY) | A_DIM);
+        for (int b = filled; b < barW; b++)
+          addstr(BLOCK_EMPTY);
+        attroff(COLOR_PAIR(C_GRAY) | A_DIM);
+
+        attron(COLOR_PAIR(co) | A_BOLD);
+        char pctBuf[12];
+        snprintf(pctBuf, sizeof(pctBuf), " %5.1f%%", val);
         addstr(pctBuf);
         attroff(COLOR_PAIR(co) | A_BOLD);
 
-        attron(COLOR_PAIR(C_BOX) | A_BOLD);
-        addstr(LINE_H);
-        attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+        curY++;
       }
 
-      // Sparkline (2 rows)
-      curY++;
-      int sparkRows = 2;
-      if (curY + sparkRows >= rows_ - 2)
-        sparkRows = rows_ - 2 - curY;
-      if (sparkRows > 0)
-        drawSparkline(curY, 2, graphW, sparkRows, m.hist, m.metric, th);
-      curY += sparkRows;
+      // Scrollbar for cores
+      if (totalCores > availCoreRows) {
+        int coreListTop = curY - showCores;
+        int coreListBot = curY - 1;
+        drawScrollbar(cols_ - 2, coreListTop, coreListBot, histScroll_,
+                      availCoreRows, totalCores);
+      }
     }
 
-    // ── Host Info Section ──
-    if (curY < rows_ - 6) {
+    // ── RAM sparkline ──
+    if (curY < rows_ - 5) {
+      std::vector<float> ramH;
+      for (auto &s : host.history)
+        ramH.push_back(s.ram);
+
       attron(COLOR_PAIR(C_BOX) | A_BOLD);
       drawHSep(curY);
       attroff(COLOR_PAIR(C_BOX) | A_BOLD);
       curY++;
+      if (curY < rows_ - 4) {
+        drawMetricTitle(curY, "RAM", host.ram, host.name, th, 'r');
+        curY++;
+      }
+      if (curY < rows_ - 3) {
+        drawSparkline(curY, 2, graphW, 1, ramH, 'r', th);
+        curY++;
+      }
+    }
 
-      // HOST INFO title
+    // ── DISK sparkline ──
+    if (curY < rows_ - 4) {
+      std::vector<float> diskH;
+      for (auto &s : host.history)
+        diskH.push_back(s.disk);
+
+      attron(COLOR_PAIR(C_BOX) | A_BOLD);
+      drawHSep(curY);
+      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+      curY++;
+      if (curY < rows_ - 3) {
+        drawMetricTitle(curY, "DISK", host.disk, host.name, th, 'd');
+        curY++;
+      }
+      if (curY < rows_ - 2) {
+        drawSparkline(curY, 2, graphW, 1, diskH, 'd', th);
+        curY++;
+      }
+    }
+
+    // ── Host Info ──
+    if (curY < rows_ - 2) {
+      attron(COLOR_PAIR(C_BOX) | A_BOLD);
+      drawHSep(curY);
+      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
       attron(COLOR_PAIR(C_CYAN) | A_BOLD);
-      mvaddstr(curY - 1, 3, " HOST INFO ");
+      mvaddstr(curY, 3, " HOST INFO ");
       attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+      curY++;
 
       int leftCol = 2, rightCol = cols_ / 2;
 
-      // Row 1: Name + Status
-      attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      mvprintw(curY, leftCol, "Name:    ");
-      attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      attron(COLOR_PAIR(C_CYAN));
-      addstr(host.name.c_str());
-      attroff(COLOR_PAIR(C_CYAN));
-
-      const char *sym;
-      const char *slbl;
-      int sc;
-      switch (host.status) {
-      case HostStatus::ALERT:
-        sc = C_RED;
-        sym = SYM_ONLINE;
-        slbl = " ALERT";
-        break;
-      case HostStatus::WARNING:
-        sc = C_YELLOW;
-        sym = SYM_WARN;
-        slbl = " WARN";
-        break;
-      default:
-        sc = C_GREEN;
-        sym = SYM_ONLINE;
-        slbl = " OK";
-        break;
-      }
-      attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      mvprintw(curY, rightCol, "Status:   ");
-      attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      attron(COLOR_PAIR(sc) | A_BOLD);
-      addstr(sym);
-      addstr(slbl);
-      attroff(COLOR_PAIR(sc) | A_BOLD);
-      curY++;
-
-      // Row 2: IP + Last Seen
-      if (curY < rows_ - 2) {
+      // Name + Status
+      if (curY < rows_ - 1) {
         attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-        mvprintw(curY, leftCol, "IP:      ");
+        mvprintw(curY, leftCol, "Name: ");
+        attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+        attron(COLOR_PAIR(C_CYAN));
+        addstr(host.name.c_str());
+        attroff(COLOR_PAIR(C_CYAN));
+
+        const char *sym, *slbl;
+        int sc;
+        switch (host.status) {
+        case HostStatus::ALERT:
+          sc = C_RED;
+          sym = SYM_ONLINE;
+          slbl = " ALERT";
+          break;
+        case HostStatus::WARNING:
+          sc = C_YELLOW;
+          sym = SYM_WARN;
+          slbl = " WARN";
+          break;
+        default:
+          sc = C_GREEN;
+          sym = SYM_ONLINE;
+          slbl = " OK";
+          break;
+        }
+        attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+        mvprintw(curY, rightCol, "Status: ");
+        attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+        attron(COLOR_PAIR(sc) | A_BOLD);
+        addstr(sym);
+        addstr(slbl);
+        attroff(COLOR_PAIR(sc) | A_BOLD);
+        curY++;
+      }
+
+      // IP + Cores + Last Seen
+      if (curY < rows_ - 1) {
+        attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+        mvprintw(curY, leftCol, "IP:   ");
         attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
         attron(COLOR_PAIR(C_GRAY));
         addstr(host.ip.c_str());
         attroff(COLOR_PAIR(C_GRAY));
 
         attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-        mvprintw(curY, rightCol, "Last Seen: ");
+        mvprintw(curY, rightCol, "Cores: ");
         attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
         attron(COLOR_PAIR(C_CYAN));
-        addstr(fmtTime(host.lastSeen).c_str());
-        attroff(COLOR_PAIR(C_CYAN));
-        curY++;
-      }
-
-      // Row 3: Thresholds
-      if (curY < rows_ - 2) {
-        attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-        mvprintw(curY, leftCol, "Thresholds: ");
-        attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-        attron(COLOR_PAIR(C_YELLOW));
-        char thBuf[64];
-        snprintf(thBuf, sizeof(thBuf), "CPU≥%.0f%%  RAM≥%.0f%%  DISK≥%.0f%%",
-                 th.getCPU(host.name), th.getRAM(host.name),
-                 th.getDisk(host.name));
-        addstr(thBuf);
-        attroff(COLOR_PAIR(C_YELLOW));
-        curY++;
-      }
-    }
-
-    // ── Recent History Table ──
-    if (curY < rows_ - 4) {
-      attron(COLOR_PAIR(C_BOX) | A_BOLD);
-      drawHSep(curY);
-      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
-
-      // Title with host counter
-      char histTitle[64];
-      snprintf(histTitle, sizeof(histTitle), " RECENT HISTORY [%d/%d hosts] ",
-               selectedIdx_ + 1, hostCount);
-      attron(COLOR_PAIR(C_CYAN) | A_BOLD);
-      mvaddstr(curY, 3, histTitle);
-      attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
-      curY++;
-
-      // Header
-      attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      mvprintw(curY, 3, "%-10s %8s %8s %8s", "TIME", "CPU%", "RAM%", "DISK%");
-      attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
-      curY++;
-
-      // Separator
-      attron(COLOR_PAIR(C_BOX));
-      mvaddstr(curY, 0, BOX_LT);
-      for (int i = 1; i < cols_ - 1; i++)
-        mvaddch(curY, i, '-');
-      mvaddstr(curY, cols_ - 1, BOX_RT);
-      attroff(COLOR_PAIR(C_BOX));
-      curY++;
-
-      // History data (newest first)
-      int availRows = rows_ - curY - 1;
-      if (availRows < 1)
-        availRows = 1;
-      int histSize = (int)host.history.size();
-      int maxHistScroll = std::max(0, histSize - availRows);
-      histScroll_ = std::clamp(histScroll_, 0, maxHistScroll);
-
-      int startI = histSize - 1 - histScroll_;
-      for (int r = 0; r < availRows && startI - r >= 0; r++) {
-        int ri = startI - r;
-        int ry = curY + r;
-        if (ry >= rows_ - 1)
-          break;
-        const auto &s = host.history[ri];
-
-        attron(COLOR_PAIR(C_CYAN));
-        mvprintw(ry, 3, "%-10s", fmtTime(s.ts).c_str());
+        char cBuf[8];
+        snprintf(cBuf, sizeof(cBuf), "%d", host.coreCount);
+        addstr(cBuf);
         attroff(COLOR_PAIR(C_CYAN));
 
-        int cc = pctColor(s.cpu, host.name, th, 'c');
-        attron(COLOR_PAIR(cc) | A_BOLD);
-        printw(" %7.1f%%", s.cpu);
-        attroff(COLOR_PAIR(cc) | A_BOLD);
-
-        int cr = pctColor(s.ram, host.name, th, 'r');
-        attron(COLOR_PAIR(cr) | A_BOLD);
-        printw(" %7.1f%%", s.ram);
-        attroff(COLOR_PAIR(cr) | A_BOLD);
-
-        int cd = pctColor(s.disk, host.name, th, 'd');
-        attron(COLOR_PAIR(cd) | A_BOLD);
-        printw(" %7.1f%%", s.disk);
-        attroff(COLOR_PAIR(cd) | A_BOLD);
+        int tsCol = rightCol + 16;
+        if (tsCol + 20 < cols_) {
+          attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+          mvprintw(curY, tsCol, "Last: ");
+          attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+          attron(COLOR_PAIR(C_CYAN));
+          addstr(fmtTime(host.lastSeen).c_str());
+          attroff(COLOR_PAIR(C_CYAN));
+        }
       }
     }
 
     renderDetailFooter(hostCount);
   }
 
+  // ── Detail helpers ────────────────────────────────────────────────────────
+  void drawMetricTitle(int y, const char *label, float val,
+                       const std::string &hostname, const Thresholds &th,
+                       char metric) {
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    mvaddstr(y, 2, LINE_H);
+    addstr(" ");
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+    attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+    addstr(label);
+    attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    addstr(" ");
+    int cur = getcurx(stdscr);
+    char pctBuf[16];
+    snprintf(pctBuf, sizeof(pctBuf), " %5.1f%% ", val);
+    int pctPos = cols_ - (int)strlen(pctBuf) - 3;
+    for (int i = cur; i < pctPos; i++)
+      addstr(LINE_H);
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+    int co = pctColor(val, hostname, th, metric);
+    attron(COLOR_PAIR(co) | A_BOLD);
+    addstr(pctBuf);
+    attroff(COLOR_PAIR(co) | A_BOLD);
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    addstr(LINE_H);
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+  }
+
   void renderDetailFooter(int hostCount) {
-    // Host counter on bottom border
     char fi[32];
     snprintf(fi, sizeof(fi), " %d/%d ", selectedIdx_ + 1, hostCount);
     attron(COLOR_PAIR(C_CYAN) | A_BOLD);
     mvaddstr(rows_ - 1, cols_ - (int)strlen(fi) - 2, fi);
     attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── COMMAND BAR & ERROR ───────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  void renderCmdBar() {
+    int y = rows_ - 1;
+    // Clear bottom line
+    attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+    for (int i = 0; i < cols_; i++)
+      mvaddch(y, i, ' ');
+    mvaddstr(y, 1, "> /");
+    addstr(cmdBuf_.c_str());
+    // Cursor blink
+    addstr("_");
+    attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+    curs_set(0);
+  }
+
+  void renderCmdError() {
+    int y = rows_ - 1;
+    int len = (int)cmdError_.size() + 4;
+    int x = (cols_ - len) / 2;
+    if (x < 0)
+      x = 0;
+    attron(COLOR_PAIR(C_RED) | A_BOLD);
+    mvaddstr(y, x, (" " + cmdError_ + " ").c_str());
+    attroff(COLOR_PAIR(C_RED) | A_BOLD);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── HELP VIEW ─────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  void renderHelp() {
+    // Frame
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    mvaddstr(0, 0, BOX_TL);
+    for (int i = 1; i < cols_ - 1; i++)
+      addstr(BOX_H);
+    addstr(BOX_TR);
+    mvaddstr(rows_ - 1, 0, BOX_BL);
+    for (int i = 1; i < cols_ - 1; i++)
+      addstr(BOX_H);
+    addstr(BOX_BR);
+    for (int r = 1; r < rows_ - 1; r++) {
+      mvaddstr(r, 0, BOX_V);
+      mvaddstr(r, cols_ - 1, BOX_V);
+    }
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+
+    // Header
+    int y = 1;
+    attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+    for (int i = 1; i < cols_ - 1; i++)
+      mvaddch(y, i, ' ');
+    std::string htitle = std::string(SYM_DIAMOND) + " HELP " + SYM_DIAMOND;
+    mvaddstr(y, (cols_ - (int)htitle.size()) / 2, htitle.c_str());
+    mvaddstr(y, cols_ - 14, "[Esc] Close");
+    attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    drawHSep(2);
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+
+    y = 4;
+    int lx = 4, rx = 28;
+
+    // Navigation section
+    attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+    mvaddstr(y++, lx, "NAVIGATION");
+    attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+    y++;
+
+    struct HelpLine {
+      const char *key;
+      const char *desc;
+    };
+    HelpLine nav[] = {
+        {"Tab", "Enter detail view / next host"},
+        {"Shift+Tab", "Previous host"},
+        {"Esc", "Back to overview / close"},
+        {"\u2191 \u2193", "Scroll up / down"},
+        {"PgUp / PgDn", "Scroll fast"},
+        {"Q", "Quit"},
+        {"/", "Open command bar"},
+    };
+    for (auto &h : nav) {
+      if (y >= rows_ - 6)
+        break;
+      attron(COLOR_PAIR(C_GREEN) | A_BOLD);
+      mvprintw(y, lx, "%-16s", h.key);
+      attroff(COLOR_PAIR(C_GREEN) | A_BOLD);
+      attron(COLOR_PAIR(C_WHITE_BD));
+      mvaddstr(y, rx, h.desc);
+      attroff(COLOR_PAIR(C_WHITE_BD));
+      y++;
+    }
+
+    y += 2;
+    // Commands section
+    attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+    mvaddstr(y++, lx, "COMMANDS (press / to open command bar)");
+    attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+    y++;
+
+    HelpLine cmds[] = {
+        {"/help", "Show this help screen"},
+        {"/viewer <host>", "Jump to host detail view"},
+        {"/history <host>", "Show host history table"},
+    };
+    for (auto &h : cmds) {
+      if (y >= rows_ - 2)
+        break;
+      attron(COLOR_PAIR(C_YELLOW) | A_BOLD);
+      mvprintw(y, lx, "%-22s", h.key);
+      attroff(COLOR_PAIR(C_YELLOW) | A_BOLD);
+      attron(COLOR_PAIR(C_WHITE_BD));
+      mvaddstr(y, rx, h.desc);
+      attroff(COLOR_PAIR(C_WHITE_BD));
+      y++;
+    }
+
+    y += 2;
+    if (y < rows_ - 2) {
+      attron(COLOR_PAIR(C_GRAY) | A_DIM);
+      mvaddstr(y, lx, "Tip: commands support partial host name matching");
+      attroff(COLOR_PAIR(C_GRAY) | A_DIM);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── HISTORY VIEW ──────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  void renderHistoryView() {
+    if (selectedIdx_ >= (int)sortedHosts_.size())
+      return;
+    const auto &host = sortedHosts_[selectedIdx_];
+
+    // Frame
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    mvaddstr(0, 0, BOX_TL);
+    for (int i = 1; i < cols_ - 1; i++)
+      addstr(BOX_H);
+    addstr(BOX_TR);
+    mvaddstr(rows_ - 1, 0, BOX_BL);
+    for (int i = 1; i < cols_ - 1; i++)
+      addstr(BOX_H);
+    addstr(BOX_BR);
+    for (int r = 1; r < rows_ - 1; r++) {
+      mvaddstr(r, 0, BOX_V);
+      mvaddstr(r, cols_ - 1, BOX_V);
+    }
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+
+    // Header
+    int y = 1;
+    attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+    for (int i = 1; i < cols_ - 1; i++)
+      mvaddch(y, i, ' ');
+    std::string ts = fmtTime(time(nullptr));
+    mvaddstr(y, 2, ts.c_str());
+    std::string htitle =
+        std::string(SYM_DIAMOND) + " HISTORY: " + host.name + " " + SYM_DIAMOND;
+    mvaddstr(y, (cols_ - (int)htitle.size()) / 2, htitle.c_str());
+    mvaddstr(y, cols_ - 14, "[Esc] Back");
+    attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    drawHSep(2);
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+
+    if (host.status == HostStatus::OFFLINE) {
+      attron(COLOR_PAIR(C_GRAY) | A_DIM);
+      std::string offMsg = "--- " + host.name + " is OFFLINE (no history) ---";
+      mvaddstr(rows_ / 2, (cols_ - (int)offMsg.size()) / 2, offMsg.c_str());
+      attroff(COLOR_PAIR(C_GRAY) | A_DIM);
+      return;
+    }
+
+    // Table header
+    y = 3;
+    int cTime = 12, cCpu = 10, cRam = 10, cDisk = 10;
+    attron(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+    mvprintw(y, 4, "%-*s", cTime, "TIME");
+    mvprintw(y, 4 + cTime, "%-*s", cCpu, "CPU%");
+    mvprintw(y, 4 + cTime + cCpu, "%-*s", cRam, "RAM%");
+    mvprintw(y, 4 + cTime + cCpu + cRam, "%-*s", cDisk, "DISK%");
+    if (cols_ > 60)
+      mvaddstr(y, 4 + cTime + cCpu + cRam + cDisk, "STATUS");
+    attroff(COLOR_PAIR(C_WHITE_BD) | A_BOLD);
+
+    // Separator
+    attron(COLOR_PAIR(C_BOX) | A_BOLD);
+    drawHSep(4);
+    attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+
+    // Data rows (newest first)
+    int dataY = 5;
+    int innerH = rows_ - dataY - 1;
+    if (innerH < 1)
+      return;
+
+    int total = (int)host.history.size();
+    int maxScroll = std::max(0, total - innerH);
+    histScroll_ = std::clamp(histScroll_, 0, maxScroll);
+
+    for (int i = 0; i < innerH && i < total; i++) {
+      int idx = total - 1 - i - histScroll_;
+      if (idx < 0)
+        break;
+      const auto &s = host.history[idx];
+      int ry = dataY + i;
+      if (ry >= rows_ - 1)
+        break;
+
+      attron(COLOR_PAIR(C_CYAN));
+      mvprintw(ry, 4, "%-*s", cTime, fmtTime(s.ts).c_str());
+      attroff(COLOR_PAIR(C_CYAN));
+
+      auto drawPct = [&](float val, char m, int col) {
+        int co = pctColor(val, host.name, Thresholds{}, m);
+        attron(COLOR_PAIR(co) | A_BOLD);
+        mvprintw(ry, col, "%6.1f%%", val);
+        attroff(COLOR_PAIR(co) | A_BOLD);
+      };
+      drawPct(s.cpu, 'c', 4 + cTime);
+      drawPct(s.ram, 'r', 4 + cTime + cCpu);
+      drawPct(s.disk, 'd', 4 + cTime + cCpu + cRam);
+
+      // Mini status indicator
+      if (cols_ > 60) {
+        bool alert = (s.cpu >= 85 || s.ram >= 80 || s.disk >= 85);
+        bool warn = (s.cpu >= 65 || s.ram >= 60 || s.disk >= 65);
+        if (alert) {
+          attron(COLOR_PAIR(C_RED) | A_BOLD);
+          mvaddstr(ry, 4 + cTime + cCpu + cRam + cDisk, SYM_ONLINE);
+          addstr(" HIGH");
+          attroff(COLOR_PAIR(C_RED) | A_BOLD);
+        } else if (warn) {
+          attron(COLOR_PAIR(C_YELLOW));
+          mvaddstr(ry, 4 + cTime + cCpu + cRam + cDisk, SYM_WARN);
+          addstr(" MED");
+          attroff(COLOR_PAIR(C_YELLOW));
+        } else {
+          attron(COLOR_PAIR(C_GREEN));
+          mvaddstr(ry, 4 + cTime + cCpu + cRam + cDisk, SYM_ONLINE);
+          addstr(" OK");
+          attroff(COLOR_PAIR(C_GREEN));
+        }
+      }
+    }
+
+    // Scrollbar
+    if (total > innerH)
+      drawScrollbar(cols_ - 2, dataY, dataY + innerH - 1, histScroll_, innerH,
+                    total);
+
+    // Counter
+    char cnt[32];
+    snprintf(cnt, sizeof(cnt), " %d samples ", total);
+    attron(COLOR_PAIR(C_GRAY) | A_DIM);
+    mvaddstr(rows_ - 1, cols_ - (int)strlen(cnt) - 2, cnt);
+    attroff(COLOR_PAIR(C_GRAY) | A_DIM);
   }
 };
 

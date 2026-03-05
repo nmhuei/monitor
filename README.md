@@ -129,13 +129,34 @@ g++ -std=c++20 -O2 -pthread -Iinclude \
 ```bash
 ./monitor_server
 # or with options:
-./monitor_server -port 8784 -config config/thresholds.conf
+./monitor_server -port 8784 -vport 8785 -config config/thresholds.conf
 ```
 
 The dashboard will launch immediately in your terminal.
+
+**Server options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-port N` | Agent connection port | `8784` |
+| `-vport N` | Remote viewer port | `port + 1` |
+| `-config path` | Thresholds config file | `config/thresholds.conf` |
+
+### 2. Remote Viewer (via nc)
+
+Connect from any machine to view a read-only dashboard:
+
+```bash
+nc server-ip 8785
+```
+
+- Auto-refreshes every 2 seconds
+- Shows host table with colored bars, per-core CPU summary
+- Multiple viewers can connect simultaneously
+- Press `Ctrl+C` to disconnect
 Press **Q** to quit.
 
-### 2. Start agents (on each machine to monitor)
+### 3. Start agents (on each machine to monitor)
 
 ```bash
 # Monitor localhost
@@ -211,54 +232,64 @@ JSON payload:
 | `Q` | Quit |
 | `Tab` | Enter host detail view / next host |
 | `Shift+Tab` | Previous host |
-| `Esc` / `Backspace` | Return to overview |
-| `↑` / `↓` | Scroll log (overview) or history (detail) |
+| `Esc` / `Backspace` | Return to overview / close |
+| `↑` / `↓` | Scroll log (overview) or cores/history (detail) |
 | `PgUp` / `PgDn` | Scroll fast |
+| `/` | Open command bar |
+
+### Commands
+
+Press `/` to open the command bar, then type a command and press `Enter`:
+
+| Command | Action |
+|---------|--------|
+| `/help` | Show help overlay with all keybindings |
+| `/viewer <host>` | Jump directly to host detail view |
+| `/history <host>` | Show scrollable history table for host |
+
+> Tip: Commands support partial host name matching (e.g., `/viewer web` matches `web-1`)
 
 ---
 
 ## Host Detail View
 
-Press `Tab` to enter the host detail view. This shows individual resource metrics for the selected host:
+Press `Tab` to enter the host detail view. Shows per-core CPU usage, RAM/Disk sparklines, and host info:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  08:15:32     ◈ HOST DETAIL: web-1 ◈           [Tab]Next [Esc]Back [Q]Quit ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║─ CPU ────────────────────────────────────────────────────────── 87.3% ─║
+║─ CPU OVERVIEW ──────────────────────────────────────────────── 87.3% ─║
 ║▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁               ║
-║▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁▂▃               ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║─ RAM ────────────────────────────────────────────────────────── 62.1% ─║
-║▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇▇█▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇                              ║
-║▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇█▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇                              ║
+║ PROCESSORS (6 cores)                                                       ║
+║ core  0  ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  53.2%      ║
+║ core  1  ██████████████████████████████████░░░░░░░░░░░░░░░░░░░  87.1%      ║
+║ core  2  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  26.4%      ║
+║ core  3  ██████████████████████████████████████████████████████  98.5%      ║
+║ core  4  ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  45.0%      ║
+║ core  5  ██████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░  65.3%      ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║─ DISK ───────────────────────────────────────────────────────── 45.0% ─║
-║▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                            ║
-║▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                            ║
+║─ RAM ─────────────────────────────────────────────────────── 62.1% ───║
+║▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇▇█▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇▇                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║─ DISK ────────────────────────────────────────────────────── 45.0% ───║
+║▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                              ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║ HOST INFO                                                                  ║
-║ Name:    web-1                    Status:   ● ALERT                        ║
-║ IP:      192.168.1.10             Last Seen: 08:15:30                      ║
-║ Thresholds: CPU≥85% RAM≥80% DISK≥85%                                      ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ RECENT HISTORY [1/3 hosts]                                                 ║
-║ TIME        CPU%     RAM%     DISK%                                        ║
-╠──────────────────────────────────────────────────────────────────────────────║
-║ 08:15:30    87.3%    62.1%    45.0%                                        ║
-║ 08:15:25    84.1%    61.5%    45.0%                                        ║
-║ 08:15:20    79.0%    60.2%    45.0%                                        ║
+║ Name: web-1              Status: ● ALERT                                   ║
+║ IP:   192.168.1.10       Cores: 6       Last: 08:15:30                     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 ```
 
-Use `Tab` / `Shift+Tab` to cycle through hosts, `Esc` to return to overview.
+Use `Tab` / `Shift+Tab` to cycle through hosts, `↑↓` to scroll cores, `Esc` to return.
 
 ---
 
 ## Features
 
 - **Real-time graphs** — sparkline-style CPU/RAM/Disk history (last 60 samples) with block characters
-- **Host detail view** — per-host resource graphs, host info, and scrollable history table (Tab to enter)
+- **Host detail view** — per-core CPU bars, RAM/DISK sparklines, host info (Tab to enter)
 - **Host table** — progress bars, percentage, color-coded status
 - **Connection log** — 500-entry scrollable log of CONNECT / METRIC / ALERT / DISCONNECT events
 - **Alert system** — configurable global and per-host thresholds; red highlighting + blinking

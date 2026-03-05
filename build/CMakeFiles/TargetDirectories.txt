@@ -1,0 +1,4 @@
+/home/light/Project/Test_coding/monitor-system/monitor/build/CMakeFiles/monitor_server.dir
+/home/light/Project/Test_coding/monitor-system/monitor/build/CMakeFiles/agent.dir
+/home/light/Project/Test_coding/monitor-system/monitor/build/CMakeFiles/edit_cache.dir
+/home/light/Project/Test_coding/monitor-system/monitor/build/CMakeFiles/rebuild_cache.dir
