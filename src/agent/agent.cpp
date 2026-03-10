@@ -13,10 +13,12 @@
 #include "../../include/protocol.hpp"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -33,6 +35,27 @@ using namespace monitor;
 static std::atomic<bool> g_running{true};
 
 static void sigHandler(int) { g_running = false; }
+
+static bool daemonizeAgent() {
+  pid_t pid = fork();
+  if (pid < 0)
+    return false;
+  if (pid > 0)
+    _exit(0); // parent exits
+
+  if (setsid() < 0)
+    return false;
+
+  int devnull = open("/dev/null", O_RDWR);
+  if (devnull >= 0) {
+    dup2(devnull, STDIN_FILENO);
+    dup2(devnull, STDOUT_FILENO);
+    dup2(devnull, STDERR_FILENO);
+    if (devnull > 2)
+      close(devnull);
+  }
+  return true;
+}
 
 static int connectToServer(const std::string &host, uint16_t port) {
   struct addrinfo hints{}, *res = nullptr;
@@ -95,6 +118,7 @@ int main(int argc, char **argv) {
   std::string agentName = "agent";
   std::string diskPath = "/";
   std::string cfgPath = "config/agent.conf";
+  bool foreground = false;
 
   int maxConnectRetries = 0; // 0 = infinite
   int reconnectIntervalSec = RECONNECT_INTERVAL_SEC;
@@ -119,6 +143,8 @@ int main(int argc, char **argv) {
       diskPath = argv[++i];
     } else if (arg == "-config" && i + 1 < argc) {
       cfgPath = argv[++i];
+    } else if (arg == "-fg" || arg == "--foreground") {
+      foreground = true;
     }
   }
 
@@ -127,6 +153,11 @@ int main(int argc, char **argv) {
   signal(SIGINT, sigHandler);
   signal(SIGTERM, sigHandler);
   signal(SIGPIPE, SIG_IGN);
+
+  if (!foreground) {
+    if (!daemonizeAgent())
+      return 1;
+  }
 
   std::cout << "Agent '" << agentName << "' started\n";
   std::cout << "Server: " << serverHost << ":" << serverPort << "\n";

@@ -181,6 +181,7 @@ Press **Q** to quit.
 | `-name hostname` | Display name in dashboard | `agent` |
 | `-disk path` | Disk path to monitor | `/` |
 | `-config path` | Agent config (retry policy) | `config/agent.conf` |
+| `-fg` | Run in foreground (default is background/daemon) | `off` |
 
 ---
 
@@ -206,6 +207,8 @@ When a threshold is exceeded:
 - The host row turns **red** in the table
 - The log panel shows an **ALERT** entry with blinking warning
 - The status badge shows `● ALERT`
+
+By default agent now runs hidden (daemon mode). Use `-fg` when you need terminal logs.
 
 ### 2) Agent retry policy (`config/agent.conf`)
 
