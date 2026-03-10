@@ -48,22 +48,26 @@ enum Color {
   C_RAIN4 = 14,
   C_RAIN5 = 15,
   C_RAIN6 = 16,
+  C_TIME = 17,
+  C_OK_DIM = 18,
+  C_WARN_ORANGE = 19,
+  C_FLEET = 20,
 };
 
-static void initColors(int themeMode = 0) {
+static void initColors(int uiMode = 0) {
   start_color();
   use_default_colors();
 
-  // Base fallback
+  // Common defaults
   init_pair(C_NORMAL, COLOR_WHITE, -1);
   init_pair(C_GREEN, COLOR_GREEN, -1);
   init_pair(C_YELLOW, COLOR_YELLOW, -1);
   init_pair(C_RED, COLOR_RED, -1);
   init_pair(C_GRAY, COLOR_WHITE, -1);
-  init_pair(C_HEADER, COLOR_BLACK, COLOR_MAGENTA);
-  init_pair(C_BOX, COLOR_YELLOW, -1);
-  init_pair(C_CYAN, COLOR_BLUE, -1);
-  init_pair(C_MAGENTA, COLOR_MAGENTA, -1);
+  init_pair(C_HEADER, COLOR_BLACK, COLOR_RED);
+  init_pair(C_BOX, COLOR_RED, -1);
+  init_pair(C_CYAN, COLOR_GREEN, -1);
+  init_pair(C_MAGENTA, COLOR_RED, -1);
   init_pair(C_WHITE_BD, COLOR_WHITE, -1);
   init_pair(C_RAIN1, COLOR_RED, -1);
   init_pair(C_RAIN2, COLOR_YELLOW, -1);
@@ -71,66 +75,58 @@ static void initColors(int themeMode = 0) {
   init_pair(C_RAIN4, COLOR_CYAN, -1);
   init_pair(C_RAIN5, COLOR_BLUE, -1);
   init_pair(C_RAIN6, COLOR_MAGENTA, -1);
+  init_pair(C_TIME, COLOR_WHITE, -1);
+  init_pair(C_OK_DIM, COLOR_GREEN, -1);
+  init_pair(C_WARN_ORANGE, COLOR_YELLOW, -1);
+  init_pair(C_FLEET, COLOR_WHITE, COLOR_RED);
 
   if (COLORS < 256)
     return;
 
-  // Theme 0: Matrix Hacker (default)
-  if (themeMode == 0) {
-    init_pair(C_HEADER, 16, 46);
-    init_pair(C_BOX, 46, -1);
-    init_pair(C_CYAN, 118, -1);
-    init_pair(C_MAGENTA, 196, -1);
+  if (uiMode == 0) {
+    // UI1 BLOODLINE / REDZONE
+    init_pair(C_HEADER, 15, 196);      // white on red
+    init_pair(C_BOX, 196, -1);         // sharp red borders
+    init_pair(C_CYAN, 46, -1);         // toxic green text accents
+    init_pair(C_MAGENTA, 196, -1);     // hot sections red
     init_pair(C_WHITE_BD, 231, -1);
-    init_pair(C_GRAY, 245, -1);
-    init_pair(C_GREEN, 118, -1);
-    init_pair(C_YELLOW, 220, -1);
-    init_pair(C_RED, 203, -1);
-    init_pair(C_RAIN1, 196, -1);
-    init_pair(C_RAIN2, 208, -1);
-    init_pair(C_RAIN3, 226, -1);
-    init_pair(C_RAIN4, 82, -1);
-    init_pair(C_RAIN5, 45, -1);
-    init_pair(C_RAIN6, 201, -1);
+    init_pair(C_GRAY, 238, -1);        // dark timestamp gray
+    init_pair(C_GREEN, 46, -1);        // toxic green
+    init_pair(C_OK_DIM, 28, -1);       // subtle green for OK
+    init_pair(C_WARN_ORANGE, 202, -1); // deep orange
+    init_pair(C_YELLOW, 202, -1);
+    init_pair(C_RED, 196, -1);
+    init_pair(C_TIME, 238, -1);
+    init_pair(C_FLEET, 231, 196);      // white on red bg
+    init_pair(C_RAIN1, 88, -1);        // dark red
+    init_pair(C_RAIN2, 124, -1);
+    init_pair(C_RAIN3, 160, -1);
+    init_pair(C_RAIN4, 196, -1);
+    init_pair(C_RAIN5, 46, -1);        // toxic accent
+    init_pair(C_RAIN6, 196, -1);
     return;
   }
 
-  // Theme 1: Neon Cyberpunk
-  if (themeMode == 1) {
-    init_pair(C_HEADER, 16, 201);
-    init_pair(C_BOX, 51, -1);
-    init_pair(C_CYAN, 51, -1);
-    init_pair(C_MAGENTA, 201, -1);
-    init_pair(C_WHITE_BD, 230, -1);
-    init_pair(C_GRAY, 244, -1);
-    init_pair(C_GREEN, 118, -1);
-    init_pair(C_YELLOW, 220, -1);
-    init_pair(C_RED, 197, -1);
-    init_pair(C_RAIN1, 196, -1);
-    init_pair(C_RAIN2, 208, -1);
-    init_pair(C_RAIN3, 226, -1);
-    init_pair(C_RAIN4, 46, -1);
-    init_pair(C_RAIN5, 51, -1);
-    init_pair(C_RAIN6, 201, -1);
-    return;
-  }
-
-  // Theme 2: Solar Amber
-  init_pair(C_HEADER, 16, 220);
-  init_pair(C_BOX, 46, -1);
-  init_pair(C_CYAN, 178, -1);
-  init_pair(C_MAGENTA, 208, -1);
-  init_pair(C_WHITE_BD, 230, -1);
-  init_pair(C_GRAY, 246, -1);
-  init_pair(C_GREEN, 82, -1);
-  init_pair(C_YELLOW, 220, -1);
-  init_pair(C_RED, 203, -1);
-  init_pair(C_RAIN1, 196, -1);
-  init_pair(C_RAIN2, 202, -1);
-  init_pair(C_RAIN3, 226, -1);
-  init_pair(C_RAIN4, 118, -1);
-  init_pair(C_RAIN5, 45, -1);
-  init_pair(C_RAIN6, 201, -1);
+  // UI2 CATPPUCCIN/MOCHA (approx in 256 palette)
+  init_pair(C_HEADER, 189, 60);   // soft text on muted bg
+  init_pair(C_BOX, 60, -1);       // borders #6C7086-ish
+  init_pair(C_CYAN, 147, -1);     // lavender accents
+  init_pair(C_MAGENTA, 211, -1);  // hot target pink
+  init_pair(C_WHITE_BD, 189, -1); // primary text
+  init_pair(C_GRAY, 60, -1);      // timestamp dim
+  init_pair(C_GREEN, 150, -1);    // OK mint
+  init_pair(C_OK_DIM, 108, -1);
+  init_pair(C_WARN_ORANGE, 223, -1); // warm yellow
+  init_pair(C_YELLOW, 223, -1);
+  init_pair(C_RED, 211, -1);      // critical soft pink-red
+  init_pair(C_TIME, 60, -1);
+  init_pair(C_FLEET, 189, 60);
+  init_pair(C_RAIN1, 111, -1);    // cpu blue
+  init_pair(C_RAIN2, 147, -1);    // ram purple
+  init_pair(C_RAIN3, 216, -1);    // disk peach
+  init_pair(C_RAIN4, 211, -1);
+  init_pair(C_RAIN5, 150, -1);
+  init_pair(C_RAIN6, 223, -1);
 }
 
 static std::string fmtTime(time_t t) {
@@ -160,8 +156,8 @@ static int pctColor(float pct, const std::string &host, const Thresholds &th,
   if (pct >= alTh)
     return C_RED;
   if (pct >= alTh * 0.80f)
-    return C_YELLOW;
-  return C_GREEN;
+    return C_WARN_ORANGE;
+  return C_OK_DIM;
 }
 
 // ── Unicode helpers ─────────────────────────────────────────────────────────
@@ -195,7 +191,7 @@ public:
     curs_set(0);
     keypad(stdscr, TRUE);
     halfdelay(2);
-    initColors(themeMode_);
+    initColors(uiMode_);
     getmaxyx(stdscr, rows_, cols_);
   }
 
@@ -254,7 +250,7 @@ public:
 private:
   int rows_ = 24, cols_ = 80;
   int logScroll_ = 0, histScroll_ = 0;
-  int themeMode_ = 0; // 0=vivid, 1=neon, 2=amber
+  int uiMode_ = 0; // 0=BLOODLINE, 1=MOCHA
   ViewMode viewMode_ = ViewMode::OVERVIEW;
   ViewMode prevMode_ = ViewMode::OVERVIEW;
   int selectedIdx_ = 0;
@@ -297,11 +293,11 @@ private:
 
     // ── Normal mode ──
     switch (ch) {
-    case 't':
-    case 'T':
-    case 20: // Ctrl+T
-      themeMode_ = (themeMode_ + 1) % 3;
-      initColors(themeMode_);
+    case 21: // Ctrl+U
+    case 'u':
+    case 'U':
+      uiMode_ = (uiMode_ + 1) % 2;
+      initColors(uiMode_);
       break;
     case 'q':
     case 'Q':
@@ -472,7 +468,7 @@ private:
                       const Thresholds &thresh) {
     calcOverviewLayout();
     drawOuterFrame();
-    renderHeader("[Tab] Detail [T] Theme [Q] Quit");
+    renderHeader("[Tab] Detail [Ctrl+U] UI [Q] Quit");
     renderGraphs(thresh);
     renderTable(thresh);
     renderLog(log, thresh);
@@ -539,9 +535,12 @@ private:
     for (int i = 1; i < cols_ - 1; i++)
       mvaddch(y, i, ' ');
     std::string ts = fmtTime(time(nullptr));
+    attron(COLOR_PAIR(C_TIME));
     mvaddstr(y, 2, ts.c_str());
+    attroff(COLOR_PAIR(C_TIME));
+    std::string modeName = (uiMode_ == 0) ? "BLOODLINE" : "MOCHA";
     std::string title =
-        std::string(SYM_DIAMOND) + " DISTRIBUTED SYSTEM MONITOR " + SYM_DIAMOND;
+        std::string(SYM_DIAMOND) + " DISTRIBUTED SYSTEM MONITOR [" + modeName + "] " + SYM_DIAMOND;
     int tx = (cols_ - (int)title.size()) / 2;
     if (tx > 12) {
       const int rainbow[] = {C_RAIN1, C_RAIN2, C_RAIN3, C_RAIN4, C_RAIN5, C_RAIN6};
@@ -628,9 +627,9 @@ private:
     // Panel 2: hot targets
     int x2 = 1 + panelW, w2 = panelW;
     drawPanel(x2, w2, "HOT TARGETS");
-    attron(COLOR_PAIR(C_RED) | A_BOLD);
+    attron(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
     mvprintw(startY + 1, x2 + 2, "CPU : %s %4.1f%%", trunc(hotCpu, 10).c_str(), std::max(0.f,maxCpu));
-    attroff(COLOR_PAIR(C_RED) | A_BOLD);
+    attroff(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
     attron(COLOR_PAIR(C_YELLOW) | A_BOLD);
     mvprintw(startY + 2, x2 + 2, "RAM : %s %4.1f%%", trunc(hotRam, 10).c_str(), std::max(0.f,maxRam));
     attroff(COLOR_PAIR(C_YELLOW) | A_BOLD);
@@ -641,15 +640,11 @@ private:
     // Panel 3: fleet health
     int x3 = 1 + panelW * 2, w3 = panelWLast;
     drawPanel(x3, w3, "FLEET HEALTH");
-    attron(COLOR_PAIR(pctColor(avgCpu, "", th, 'c')) | A_BOLD);
+    attron(COLOR_PAIR(C_FLEET) | A_BOLD);
     mvprintw(startY + 1, x3 + 2, "AVG CPU : %5.1f%%", avgCpu);
-    attroff(COLOR_PAIR(pctColor(avgCpu, "", th, 'c')) | A_BOLD);
-    attron(COLOR_PAIR(pctColor(avgRam, "", th, 'r')) | A_BOLD);
     mvprintw(startY + 2, x3 + 2, "AVG RAM : %5.1f%%", avgRam);
-    attroff(COLOR_PAIR(pctColor(avgRam, "", th, 'r')) | A_BOLD);
-    attron(COLOR_PAIR(pctColor(avgDisk, "", th, 'd')) | A_BOLD);
     mvprintw(startY + 3, x3 + 2, "AVG DISK: %5.1f%%", avgDisk);
-    attroff(COLOR_PAIR(pctColor(avgDisk, "", th, 'd')) | A_BOLD);
+    attroff(COLOR_PAIR(C_FLEET) | A_BOLD);
   }
 
   void drawSparkTitle(int y, int x, int w, int endX, const char *title) {
@@ -923,9 +918,9 @@ private:
         pm(ev.ram, 'r', "R:");
         pm(ev.disk, 'd', "D:");
         if (!ev.detail.empty() && cx + 3 < cols_ - 1) {
-          attron(COLOR_PAIR(C_RED) | A_BOLD);
+          attron(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
           mvaddstr(ry, cx, ("!" + ev.detail.substr(0, cols_ - cx - 3)).c_str());
-          attroff(COLOR_PAIR(C_RED) | A_BOLD);
+          attroff(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
         }
       }
     }
@@ -974,13 +969,15 @@ private:
     for (int i = 1; i < cols_ - 1; i++)
       mvaddch(y, i, ' ');
     std::string ts = fmtTime(time(nullptr));
+    attron(COLOR_PAIR(C_TIME));
     mvaddstr(y, 2, ts.c_str());
+    attroff(COLOR_PAIR(C_TIME));
     std::string dtitle = std::string(SYM_DIAMOND) +
                          " HOST DETAIL: " + host.name + " " + SYM_DIAMOND;
     int dtx = (cols_ - (int)dtitle.size()) / 2;
     if (dtx > 12)
       mvaddstr(y, dtx, dtitle.c_str());
-    const char *dhint = "[Tab]Next [T]Theme [Esc]Back [Q]Quit";
+    const char *dhint = "[Tab]Next [Ctrl+U]UI [Esc]Back [Q]Quit";
     int dhLen = (int)strlen(dhint);
     if (cols_ - dhLen - 3 > 0)
       mvaddstr(y, cols_ - dhLen - 2, dhint);
@@ -1292,9 +1289,9 @@ private:
     int x = (cols_ - len) / 2;
     if (x < 0)
       x = 0;
-    attron(COLOR_PAIR(C_RED) | A_BOLD);
+    attron(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
     mvaddstr(y, x, (" " + cmdError_ + " ").c_str());
-    attroff(COLOR_PAIR(C_RED) | A_BOLD);
+    attroff(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1324,7 +1321,7 @@ private:
       mvaddch(y, i, ' ');
     std::string htitle = std::string(SYM_DIAMOND) + " HELP " + SYM_DIAMOND;
     mvaddstr(y, (cols_ - (int)htitle.size()) / 2, htitle.c_str());
-    mvaddstr(y, cols_ - 24, "[T] Theme  [Esc] Close");
+    mvaddstr(y, cols_ - 24, "[Ctrl+U] UI  [Esc] Close");
     attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
 
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
@@ -1347,7 +1344,7 @@ private:
     HelpLine nav[] = {
         {"Tab", "Enter detail view / next host"},
         {"Shift+Tab", "Previous host"},
-        {"T / Ctrl+T", "Cycle theme (Vivid/Neon/Amber)"},
+        {"U / Ctrl+U", "Toggle UI (BLOODLINE / MOCHA)"},
         {"Esc", "Back to overview / close"},
         {"\u2191 \u2193", "Scroll up / down"},
         {"PgUp / PgDn", "Scroll fast"},
@@ -1428,7 +1425,9 @@ private:
     for (int i = 1; i < cols_ - 1; i++)
       mvaddch(y, i, ' ');
     std::string ts = fmtTime(time(nullptr));
+    attron(COLOR_PAIR(C_TIME));
     mvaddstr(y, 2, ts.c_str());
+    attroff(COLOR_PAIR(C_TIME));
     std::string htitle =
         std::string(SYM_DIAMOND) + " HISTORY: " + host.name + " " + SYM_DIAMOND;
     mvaddstr(y, (cols_ - (int)htitle.size()) / 2, htitle.c_str());
@@ -1502,10 +1501,10 @@ private:
         bool alert = (s.cpu >= 85 || s.ram >= 80 || s.disk >= 85);
         bool warn = (s.cpu >= 65 || s.ram >= 60 || s.disk >= 65);
         if (alert) {
-          attron(COLOR_PAIR(C_RED) | A_BOLD);
+          attron(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
           mvaddstr(ry, 4 + cTime + cCpu + cRam + cDisk, SYM_ONLINE);
           addstr(" HIGH");
-          attroff(COLOR_PAIR(C_RED) | A_BOLD);
+          attroff(COLOR_PAIR(C_RED) | A_BOLD | A_BLINK);
         } else if (warn) {
           attron(COLOR_PAIR(C_YELLOW));
           mvaddstr(ry, 4 + cTime + cCpu + cRam + cDisk, SYM_WARN);
