@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="${PORT:-8784}"
+VPORT="${VPORT:-8785}"
+INTERVAL="${INTERVAL:-2}"
+AGENT1_NAME="${AGENT1_NAME:-web-1}"
+AGENT2_NAME="${AGENT2_NAME:-db-1}"
+
+cd "$ROOT_DIR"
+./build.sh >/dev/null
+
+open_term() {
+  local title="$1"
+  local cmd="$2"
+
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    gnome-terminal --title="$title" -- bash -lc "$cmd; exec bash"
+  elif command -v xfce4-terminal >/dev/null 2>&1; then
+    xfce4-terminal --title="$title" --hold -e "bash -lc '$cmd'"
+  elif command -v konsole >/dev/null 2>&1; then
+    konsole --new-tab -p tabtitle="$title" -e bash -lc "$cmd; exec bash"
+  elif command -v x-terminal-emulator >/dev/null 2>&1; then
+    x-terminal-emulator -e bash -lc "$cmd; exec bash"
+  else
+    echo "No supported terminal emulator found (gnome-terminal/xfce4-terminal/konsole/x-terminal-emulator)."
+    exit 1
+  fi
+}
+
+open_term "MONITOR" "cd '$ROOT_DIR' && ./monitor_server -port $PORT -vport $VPORT -config config/thresholds.conf -server-config config/server.conf"
+sleep 1
+open_term "AGENT-1" "cd '$ROOT_DIR' && ./agent -server 127.0.0.1:$PORT -interval $INTERVAL -name $AGENT1_NAME"
+open_term "AGENT-2" "cd '$ROOT_DIR' && ./agent -server 127.0.0.1:$PORT -interval $INTERVAL -name $AGENT2_NAME"
+
+echo "Opened 3 terminals: MONITOR, AGENT-1, AGENT-2"
