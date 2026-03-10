@@ -47,6 +47,8 @@ enum Color {
 static void initColors() {
   start_color();
   use_default_colors();
+
+  // Default fallback palette
   init_pair(C_NORMAL, COLOR_WHITE, -1);
   init_pair(C_GREEN, COLOR_GREEN, -1);
   init_pair(C_YELLOW, COLOR_YELLOW, -1);
@@ -57,6 +59,23 @@ static void initColors() {
   init_pair(C_CYAN, COLOR_CYAN, -1);
   init_pair(C_MAGENTA, COLOR_MAGENTA, -1);
   init_pair(C_WHITE_BD, COLOR_WHITE, -1);
+
+  // Richer 256-color theme when available
+  if (COLORS >= 256) {
+    // header: dark text on bright aqua/teal
+    init_pair(C_HEADER, 16, 51);
+    // frame/lines
+    init_pair(C_BOX, 45, -1);
+    // text accents
+    init_pair(C_CYAN, 51, -1);
+    init_pair(C_MAGENTA, 213, -1);
+    init_pair(C_WHITE_BD, 231, -1);
+    init_pair(C_GRAY, 245, -1);
+    // status colors
+    init_pair(C_GREEN, 46, -1);
+    init_pair(C_YELLOW, 226, -1);
+    init_pair(C_RED, 196, -1);
+  }
 }
 
 static std::string fmtTime(time_t t) {
@@ -462,8 +481,11 @@ private:
     std::string title =
         std::string(SYM_DIAMOND) + " DISTRIBUTED SYSTEM MONITOR " + SYM_DIAMOND;
     int tx = (cols_ - (int)title.size()) / 2;
-    if (tx > 12)
+    if (tx > 12) {
+      attron(COLOR_PAIR(C_MAGENTA) | A_BOLD);
       mvaddstr(y, tx, title.c_str());
+      attroff(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+    }
     int hintLen = (int)strlen(hint);
     if (cols_ - hintLen - 3 > 0)
       mvaddstr(y, cols_ - hintLen - 2, hint);
@@ -1128,13 +1150,19 @@ private:
   void drawMetricTitle(int y, const char *label, float val,
                        const std::string &hostname, const Thresholds &th,
                        char metric) {
+    int titleColor = C_CYAN;
+    if (metric == 'r')
+      titleColor = C_GREEN;
+    else if (metric == 'd')
+      titleColor = C_MAGENTA;
+
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
     mvaddstr(y, 2, LINE_H);
     addstr(" ");
     attroff(COLOR_PAIR(C_BOX) | A_BOLD);
-    attron(COLOR_PAIR(C_CYAN) | A_BOLD);
+    attron(COLOR_PAIR(titleColor) | A_BOLD);
     addstr(label);
-    attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
+    attroff(COLOR_PAIR(titleColor) | A_BOLD);
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
     addstr(" ");
     int cur = getcurx(stdscr);
