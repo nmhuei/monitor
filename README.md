@@ -177,6 +177,7 @@ Press **Q** to quit.
 | `-interval N` | Send interval (seconds) | `5` |
 | `-name hostname` | Display name in dashboard | `agent` |
 | `-disk path` | Disk path to monitor | `/` |
+| `-config path` | Agent config (retry policy) | `config/agent.conf` |
 
 ---
 
@@ -201,6 +202,17 @@ When a threshold is exceeded:
 - The host row turns **red** in the table
 - The log panel shows an **ALERT** entry with blinking warning
 - The status badge shows `● ALERT`
+
+Agent retry policy (`config/agent.conf`):
+
+```ini
+# Number of consecutive failed connect attempts before agent exits
+# 0 = retry forever
+MAX_CONNECT_RETRIES=12
+
+# Delay between retries
+RECONNECT_INTERVAL_SEC=5
+```
 
 ---
 

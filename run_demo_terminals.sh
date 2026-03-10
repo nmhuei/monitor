@@ -28,11 +28,11 @@ cd "$ROOT_DIR"
 ./build.sh >/dev/null
 
 # Start agents hidden in background
-nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" \
+nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" -config config/agent.conf \
   >"$LOG_DIR/agent1.log" 2>&1 &
 echo $! > "$PID_DIR/agent1.pid"
 
-nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" \
+nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" -config config/agent.conf \
   >"$LOG_DIR/agent2.log" 2>&1 &
 echo $! > "$PID_DIR/agent2.pid"
 

@@ -2,7 +2,7 @@
  * agent.cpp — metrics collection agent
  *
  * Usage: ./agent -server <host>:<port> -interval <sec> -name <hostname>
- *               [-disk <path>]
+ *               [-disk <path>] [-config <path>]
  *
  * Collects CPU, RAM, Disk and sends JSON to the monitor server.
  * Auto-reconnects on disconnect.
@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -56,12 +57,47 @@ static int connectToServer(const std::string &host, uint16_t port) {
   return fd;
 }
 
+static std::string trim(const std::string &s) {
+  auto b = s.find_first_not_of(" \t\r\n");
+  auto e = s.find_last_not_of(" \t\r\n");
+  return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+}
+
+static void loadAgentConfig(const std::string &path, int &maxRetries,
+                            int &reconnectSec) {
+  std::ifstream in(path);
+  if (!in)
+    return;
+  std::string line;
+  while (std::getline(in, line)) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#')
+      continue;
+    auto eq = line.find('=');
+    if (eq == std::string::npos)
+      continue;
+    std::string k = trim(line.substr(0, eq));
+    std::string v = trim(line.substr(eq + 1));
+    try {
+      if (k == "MAX_CONNECT_RETRIES")
+        maxRetries = std::max(0, std::stoi(v));
+      else if (k == "RECONNECT_INTERVAL_SEC")
+        reconnectSec = std::max(1, std::stoi(v));
+    } catch (...) {
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   std::string serverHost = "127.0.0.1";
   uint16_t serverPort = DEFAULT_PORT;
   int interval = 5;
   std::string agentName = "agent";
   std::string diskPath = "/";
+  std::string cfgPath = "config/agent.conf";
+
+  int maxConnectRetries = 0; // 0 = infinite
+  int reconnectIntervalSec = RECONNECT_INTERVAL_SEC;
 
   // Parse arguments
   for (int i = 1; i < argc; i++) {
@@ -81,8 +117,12 @@ int main(int argc, char **argv) {
       agentName = argv[++i];
     } else if (arg == "-disk" && i + 1 < argc) {
       diskPath = argv[++i];
+    } else if (arg == "-config" && i + 1 < argc) {
+      cfgPath = argv[++i];
     }
   }
+
+  loadAgentConfig(cfgPath, maxConnectRetries, reconnectIntervalSec);
 
   signal(SIGINT, sigHandler);
   signal(SIGTERM, sigHandler);
@@ -91,8 +131,14 @@ int main(int argc, char **argv) {
   std::cout << "Agent '" << agentName << "' started\n";
   std::cout << "Server: " << serverHost << ":" << serverPort << "\n";
   std::cout << "Sending metrics every " << interval << " seconds...\n";
+  std::cout << "Reconnect interval: " << reconnectIntervalSec << "s\n";
+  if (maxConnectRetries == 0)
+    std::cout << "Max connect retries: infinite\n";
+  else
+    std::cout << "Max connect retries: " << maxConnectRetries << "\n";
 
   int fd = -1;
+  int failedConnectAttempts = 0;
 
   while (g_running) {
     // Connect / reconnect
@@ -101,12 +147,22 @@ int main(int argc, char **argv) {
                 << "...\n";
       fd = connectToServer(serverHost, serverPort);
       if (fd < 0) {
-        std::cout << "Connection failed. Retrying in " << RECONNECT_INTERVAL_SEC
-                  << "s...\n";
-        for (int i = 0; i < RECONNECT_INTERVAL_SEC && g_running; i++)
+        failedConnectAttempts++;
+        std::cout << "Connection failed (attempt " << failedConnectAttempts;
+        if (maxConnectRetries > 0)
+          std::cout << "/" << maxConnectRetries;
+        std::cout << "). Retrying in " << reconnectIntervalSec << "s...\n";
+
+        if (maxConnectRetries > 0 && failedConnectAttempts >= maxConnectRetries) {
+          std::cout << "Max connect retries reached. Agent will stop.\n";
+          break;
+        }
+
+        for (int i = 0; i < reconnectIntervalSec && g_running; i++)
           std::this_thread::sleep_for(std::chrono::seconds(1));
         continue;
       }
+      failedConnectAttempts = 0;
       std::cout << "Connected.\n";
     }
 
@@ -119,10 +175,10 @@ int main(int argc, char **argv) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen) < 0 ||
         sockErr != 0) {
       std::cout << "Connection lost (socket error " << sockErr
-                << "). Reconnecting in " << RECONNECT_INTERVAL_SEC << "s...\n";
+                << "). Reconnecting in " << reconnectIntervalSec << "s...\n";
       close(fd);
       fd = -1;
-      for (int i = 0; i < RECONNECT_INTERVAL_SEC && g_running; i++)
+      for (int i = 0; i < reconnectIntervalSec && g_running; i++)
         std::this_thread::sleep_for(std::chrono::seconds(1));
       continue;
     }
@@ -134,10 +190,10 @@ int main(int argc, char **argv) {
 
     if (!net::sendMsg(fd, payload)) {
       std::cout << "Send failed — server disconnected. Reconnecting in "
-                << RECONNECT_INTERVAL_SEC << "s...\n";
+                << reconnectIntervalSec << "s...\n";
       close(fd);
       fd = -1;
-      for (int i = 0; i < RECONNECT_INTERVAL_SEC && g_running; i++)
+      for (int i = 0; i < reconnectIntervalSec && g_running; i++)
         std::this_thread::sleep_for(std::chrono::seconds(1));
       continue;
     }

@@ -35,11 +35,11 @@ echo "[demo] build..."
 ./build.sh >/dev/null
 
 echo "[demo] start agent #1: $AGENT1_NAME"
-./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" &
+./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" -config config/agent.conf &
 AGENT1_PID=$!
 
 echo "[demo] start agent #2: $AGENT2_NAME"
-./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" &
+./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" -config config/agent.conf &
 AGENT2_PID=$!
 
 echo "[demo] start monitor_server (foreground) on :$PORT"
