@@ -234,6 +234,9 @@ MAX_CONNECT_RETRIES=12
 
 # Delay between retries
 RECONNECT_INTERVAL_SEC=5
+
+# Shared auth token (must match server AUTH_TOKEN)
+AUTH_TOKEN=
 ```
 
 ### 3) Server runtime policy (`config/server.conf`)
@@ -248,13 +251,21 @@ BACKUP_INTERVAL_SEC=10
 # Agent send interval used by demo scripts
 AGENT_INTERVAL_SEC=2
 
-# Persisted state file path
+# Shared auth token (agent must match). Empty => auth disabled
+AUTH_TOKEN=
+
+# Socket receive timeout (seconds) to avoid half-open stuck recv
+SOCKET_RECV_TIMEOUT_SEC=10
+
+# Persisted state file path (validated to stay inside project directory)
 STATE_FILE=data/monitor_state.db
 ```
 
 What this gives you:
 - monitor server restores state after restart (from `STATE_FILE`)
 - one IP cannot flood server with unlimited agents
+- optional shared-token authentication between agent/server
+- socket timeout protection for half-open clients
 - demo scripts can change agent interval by config only
 
 ---
@@ -274,6 +285,11 @@ JSON payload:
   "cpu": 87.3,
   "ram": 62.1,
   "disk": 45.0,
+  "net_rx_kbps": 120.5,
+  "net_tx_kbps": 33.2,
+  "load1": 0.92,
+  "proc_count": 312,
+  "token": "<optional-shared-token>",
   "timestamp": 1710000000
 }
 ```

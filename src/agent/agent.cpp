@@ -87,7 +87,7 @@ static std::string trim(const std::string &s) {
 }
 
 static void loadAgentConfig(const std::string &path, int &maxRetries,
-                            int &reconnectSec) {
+                            int &reconnectSec, std::string &authToken) {
   std::ifstream in(path);
   if (!in)
     return;
@@ -106,6 +106,8 @@ static void loadAgentConfig(const std::string &path, int &maxRetries,
         maxRetries = std::max(0, std::stoi(v));
       else if (k == "RECONNECT_INTERVAL_SEC")
         reconnectSec = std::max(1, std::stoi(v));
+      else if (k == "AUTH_TOKEN")
+        authToken = v;
     } catch (...) {
     }
   }
@@ -122,6 +124,7 @@ int main(int argc, char **argv) {
 
   int maxConnectRetries = 0; // 0 = infinite
   int reconnectIntervalSec = RECONNECT_INTERVAL_SEC;
+  std::string authToken;
 
   // Parse arguments
   for (int i = 1; i < argc; i++) {
@@ -148,7 +151,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  loadAgentConfig(cfgPath, maxConnectRetries, reconnectIntervalSec);
+  loadAgentConfig(cfgPath, maxConnectRetries, reconnectIntervalSec, authToken);
 
   signal(SIGINT, sigHandler);
   signal(SIGTERM, sigHandler);
@@ -217,7 +220,10 @@ int main(int argc, char **argv) {
     // Encode and send (with per-core CPU data)
     time_t now = time(nullptr);
     std::string payload = json::encode(agentName, sample.cpu, sample.ram,
-                                       sample.disk, now, sample.cores);
+                                       sample.disk, now, sample.cores,
+                                       authToken,
+                                       sample.netRxKBps, sample.netTxKBps,
+                                       sample.load1, sample.procCount);
 
     if (!net::sendMsg(fd, payload)) {
       std::cout << "Send failed — server disconnected. Reconnecting in "

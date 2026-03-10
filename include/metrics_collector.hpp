@@ -15,11 +15,21 @@
 
 namespace monitor::metrics {
 
+inline std::string trim(const std::string &s) {
+  auto b = s.find_first_not_of(" \t\r\n");
+  auto e = s.find_last_not_of(" \t\r\n");
+  return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+}
+
 struct Sample {
   float cpu = 0.0f;
   float ram = 0.0f;
   float disk = 0.0f;
   std::vector<float> cores; // per-core CPU %
+  float netRxKBps = 0.0f;
+  float netTxKBps = 0.0f;
+  float load1 = 0.0f;
+  int procCount = 0;
 };
 
 // Internal CPU state for delta calculation
@@ -117,24 +127,87 @@ inline float diskPercent(const std::string &path = "/") {
          (1.0f - static_cast<float>(avail) / static_cast<float>(total));
 }
 
-// Collect a sample with per-core CPU; blocks ~500ms for CPU measurement
+inline std::pair<unsigned long long, unsigned long long> readNetBytes() {
+  std::ifstream f("/proc/net/dev");
+  std::string line;
+  unsigned long long rx = 0, tx = 0;
+  int skip = 0;
+  while (std::getline(f, line)) {
+    if (skip < 2) {
+      skip++;
+      continue;
+    }
+    auto c = line.find(':');
+    if (c == std::string::npos)
+      continue;
+    std::string ifn = trim(line.substr(0, c));
+    if (ifn == "lo")
+      continue;
+    std::string rest = line.substr(c + 1);
+    std::istringstream iss(rest);
+    unsigned long long vals[16] = {0};
+    for (int i = 0; i < 16 && iss; i++)
+      iss >> vals[i];
+    rx += vals[0];
+    tx += vals[8];
+  }
+  return {rx, tx};
+}
+
+inline float readLoad1() {
+  std::ifstream f("/proc/loadavg");
+  float l1 = 0.0f;
+  f >> l1;
+  return l1;
+}
+
+inline int readProcCount() {
+  std::ifstream f("/proc/loadavg");
+  std::string a, b, c, d;
+  if (!(f >> a >> b >> c >> d))
+    return 0;
+  auto slash = d.find('/');
+  if (slash == std::string::npos)
+    return 0;
+  return std::stoi(d.substr(slash + 1));
+}
+
+// Collect sample without blocking sleeps.
 inline Sample collect(const std::string &diskPath = "/") {
-  auto states1 = readAllCpuStates();
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  auto states2 = readAllCpuStates();
+  static bool initialized = false;
+  static std::vector<CpuState> prevStates;
+  static std::chrono::steady_clock::time_point prevTs;
+  static unsigned long long prevRx = 0, prevTx = 0;
+
+  auto now = std::chrono::steady_clock::now();
+  auto states = readAllCpuStates();
+  auto [rxB, txB] = readNetBytes();
 
   Sample s;
-  // Total CPU (index 0)
-  if (!states1.empty() && !states2.empty())
-    s.cpu = cpuPercent(states1[0], states2[0]);
+  if (initialized && !prevStates.empty() && !states.empty()) {
+    s.cpu = cpuPercent(prevStates[0], states[0]);
+    size_t coreCount = std::min(prevStates.size(), states.size());
+    for (size_t i = 1; i < coreCount; i++)
+      s.cores.push_back(cpuPercent(prevStates[i], states[i]));
 
-  // Per-core (index 1..N)
-  size_t coreCount = std::min(states1.size(), states2.size());
-  for (size_t i = 1; i < coreCount; i++)
-    s.cores.push_back(cpuPercent(states1[i], states2[i]));
+    auto dtMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - prevTs).count();
+    if (dtMs > 0) {
+      double dt = dtMs / 1000.0;
+      s.netRxKBps = (float)((rxB - prevRx) / 1024.0 / dt);
+      s.netTxKBps = (float)((txB - prevTx) / 1024.0 / dt);
+    }
+  }
 
   s.ram = ramPercent();
   s.disk = diskPercent(diskPath);
+  s.load1 = readLoad1();
+  s.procCount = readProcCount();
+
+  prevStates = states;
+  prevTs = now;
+  prevRx = rxB;
+  prevTx = txB;
+  initialized = true;
   return s;
 }
 

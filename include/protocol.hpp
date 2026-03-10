@@ -20,6 +20,11 @@ struct MetricPayload {
   time_t timestamp = 0;
   std::string ip;
   std::vector<float> cores; // per-core CPU %
+  float netRxKBps = 0.0f;
+  float netTxKBps = 0.0f;
+  float load1 = 0.0f;
+  int procCount = 0;
+  std::string token;
 };
 
 enum class HostStatus { ONLINE, WARNING, ALERT, OFFLINE };

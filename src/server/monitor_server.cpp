@@ -49,6 +49,8 @@ static std::unordered_map<int, std::string> g_fdIP;
 struct ServerConfig {
   int maxAgentsPerIP = 2;
   int backupIntervalSec = 10;
+  int socketRecvTimeoutSec = 10;
+  std::string authToken;
   std::string stateFile = "data/monitor_state.db";
 };
 
@@ -58,6 +60,27 @@ static std::string trim(const std::string &s) {
   auto b = s.find_first_not_of(" \t\r\n");
   auto e = s.find_last_not_of(" \t\r\n");
   return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+}
+
+static std::string safeStatePath(const std::string &candidate) {
+  namespace fs = std::filesystem;
+  try {
+    fs::path base = fs::canonical(fs::current_path());
+    fs::path p(candidate);
+    fs::path norm;
+    if (p.is_absolute())
+      norm = p.lexically_normal();
+    else
+      norm = (base / p).lexically_normal();
+
+    std::string ns = norm.string();
+    std::string bs = base.string();
+    if (ns.rfind(bs, 0) != 0)
+      return (base / "data/monitor_state.db").string();
+    return norm.string();
+  } catch (...) {
+    return "data/monitor_state.db";
+  }
 }
 
 static ServerConfig loadServerConfig(const std::string &path) {
@@ -82,12 +105,17 @@ static ServerConfig loadServerConfig(const std::string &path) {
         cfg.maxAgentsPerIP = std::max(1, std::stoi(v));
       else if (k == "BACKUP_INTERVAL_SEC")
         cfg.backupIntervalSec = std::max(1, std::stoi(v));
+      else if (k == "SOCKET_RECV_TIMEOUT_SEC")
+        cfg.socketRecvTimeoutSec = std::max(1, std::stoi(v));
+      else if (k == "AUTH_TOKEN")
+        cfg.authToken = v;
       else if (k == "STATE_FILE")
         cfg.stateFile = v;
     } catch (...) {
       // ignore malformed value
     }
   }
+  cfg.stateFile = safeStatePath(cfg.stateFile);
   return cfg;
 }
 
@@ -105,6 +133,9 @@ static void handleClient(int fd, std::string ip) {
       auto obj = json::decode(msg);
 
       std::string host = obj.count("host") ? obj["host"].str : "unknown";
+      std::string token = obj.count("token") ? obj["token"].str : "";
+      if (!g_cfg.authToken.empty() && token != g_cfg.authToken)
+        break;
       float cpu = obj.count("cpu") ? (float)obj["cpu"].num : 0.f;
       float ram = obj.count("ram") ? (float)obj["ram"].num : 0.f;
       float disk = obj.count("disk") ? (float)obj["disk"].num : 0.f;
@@ -126,6 +157,11 @@ static void handleClient(int fd, std::string ip) {
       p.disk = disk;
       p.timestamp = ts;
       p.ip = ip;
+      p.netRxKBps = obj.count("net_rx_kbps") ? (float)obj["net_rx_kbps"].num : 0.f;
+      p.netTxKBps = obj.count("net_tx_kbps") ? (float)obj["net_tx_kbps"].num : 0.f;
+      p.load1 = obj.count("load1") ? (float)obj["load1"].num : 0.f;
+      p.procCount = obj.count("proc_count") ? (int)obj["proc_count"].num : 0;
+      p.token = token;
 
       // Parse per-core CPU data
       if (obj.count("cores") && obj["cores"].is_arr) {
@@ -219,6 +255,11 @@ static void acceptLoop(int serverFd) {
       close(fd);
       continue;
     }
+
+    timeval tv{};
+    tv.tv_sec = g_cfg.socketRecvTimeoutSec;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     std::thread(handleClient, fd, ip).detach();
   }

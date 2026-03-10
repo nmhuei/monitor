@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -30,6 +31,7 @@ inline bool recvAll(int fd, void* buf, size_t len) {
     char* p = reinterpret_cast<char*>(buf);
     while (len > 0) {
         ssize_t n = ::recv(fd, p, len, 0);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         p   += n;
         len -= n;

@@ -12,15 +12,65 @@
 namespace monitor::json {
 
 // --- Encoder ----------------------------------------------------------------
+inline std::string escape(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+    case '\\': out += "\\\\"; break;
+    case '"': out += "\\\""; break;
+    case '\n': out += "\\n"; break;
+    case '\r': out += "\\r"; break;
+    case '\t': out += "\\t"; break;
+    default: out += c; break;
+    }
+  }
+  return out;
+}
+
+inline std::string unescape(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  bool esc = false;
+  for (char c : s) {
+    if (!esc) {
+      if (c == '\\') esc = true;
+      else out += c;
+      continue;
+    }
+    switch (c) {
+    case 'n': out += '\n'; break;
+    case 'r': out += '\r'; break;
+    case 't': out += '\t'; break;
+    case '\\': out += '\\'; break;
+    case '"': out += '"'; break;
+    default: out += c; break;
+    }
+    esc = false;
+  }
+  return out;
+}
+
 inline std::string encode(const std::string &host, float cpu, float ram,
                           float disk, time_t ts,
-                          const std::vector<float> &cores = {}) {
+                          const std::vector<float> &cores = {},
+                          const std::string &token = "",
+                          float netRxKBps = 0.0f,
+                          float netTxKBps = 0.0f,
+                          float load1 = 0.0f,
+                          int procCount = 0) {
   std::ostringstream o;
-  o << "{\"host\":\"" << host << "\","
+  o << "{\"host\":\"" << escape(host) << "\","
     << "\"cpu\":" << cpu << ","
     << "\"ram\":" << ram << ","
     << "\"disk\":" << disk << ","
-    << "\"timestamp\":" << static_cast<long long>(ts);
+    << "\"timestamp\":" << static_cast<long long>(ts)
+    << ",\"net_rx_kbps\":" << netRxKBps
+    << ",\"net_tx_kbps\":" << netTxKBps
+    << ",\"load1\":" << load1
+    << ",\"proc_count\":" << procCount;
+  if (!token.empty())
+    o << ",\"token\":\"" << escape(token) << "\"";
   if (!cores.empty()) {
     o << ",\"cores\":[";
     for (size_t i = 0; i < cores.size(); i++) {
@@ -69,9 +119,16 @@ inline Object decode(const std::string &json) {
   int depth = 0;
   bool inStr = false;
   std::string cur;
+  bool escaped = false;
   for (char c : s) {
-    if (c == '"')
+    if (inStr && c == '\\' && !escaped) {
+      escaped = true;
+      cur += c;
+      continue;
+    }
+    if (c == '"' && !escaped)
       inStr = !inStr;
+    escaped = false;
     if (!inStr) {
       if (c == '{' || c == '[')
         depth++;
@@ -97,7 +154,7 @@ inline Object decode(const std::string &json) {
     Value v;
     if (!val.empty() && val[0] == '"') {
       v.is_str = true;
-      v.str = unquote(val);
+      v.str = unescape(unquote(val));
     } else if (!val.empty() && val[0] == '[') {
       // Parse array of numbers
       v.is_arr = true;

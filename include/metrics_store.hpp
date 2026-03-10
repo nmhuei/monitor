@@ -33,6 +33,10 @@ struct HostState {
   int fd = -1;                       // socket fd
   std::vector<float> cores;          // latest per-core CPU %
   int coreCount = 0;
+  float netRxKBps = 0;
+  float netTxKBps = 0;
+  float load1 = 0;
+  int procCount = 0;
 
   void push(float c, float r, float d, time_t ts,
             const std::vector<float> &coreVals = {}) {
@@ -68,12 +72,52 @@ struct LogEvent {
 
 class MetricsStore {
 public:
+  static std::string esc(const std::string &s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) {
+      if (c == '\\' || c == '|')
+        o += '\\';
+      if (c == '\n') {
+        o += "\\n";
+        continue;
+      }
+      o += c;
+    }
+    return o;
+  }
+
+  static std::string unesc(const std::string &s) {
+    std::string o;
+    o.reserve(s.size());
+    bool e = false;
+    for (char c : s) {
+      if (!e) {
+        if (c == '\\') {
+          e = true;
+          continue;
+        }
+        o += c;
+        continue;
+      }
+      if (c == 'n')
+        o += '\n';
+      else
+        o += c;
+      e = false;
+    }
+    return o;
+  }
   void upsert(const MetricPayload &p, const Thresholds &thresh) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto &h = hosts_[p.host];
     h.name = p.host;
     h.ip = p.ip;
     h.push(p.cpu, p.ram, p.disk, p.timestamp, p.cores);
+    h.netRxKBps = p.netRxKBps;
+    h.netTxKBps = p.netTxKBps;
+    h.load1 = p.load1;
+    h.procCount = p.procCount;
 
     // Determine status
     bool alert = (p.cpu >= thresh.getCPU(p.host)) ||
@@ -164,15 +208,16 @@ public:
       return false;
 
     for (const auto &[name, h] : hosts_) {
-      out << "HOST|" << h.name << "|" << h.ip << "|" << h.cpu << "|" << h.ram
+      out << "HOST|" << esc(h.name) << "|" << esc(h.ip) << "|" << h.cpu << "|" << h.ram
           << "|" << h.disk << "|" << (long long)h.lastSeen << "|"
-          << (int)h.status << "\n";
+          << (int)h.status << "|" << h.netRxKBps << "|" << h.netTxKBps
+          << "|" << h.load1 << "|" << h.procCount << "\n";
     }
 
     for (const auto &ev : log_) {
-      out << "LOG|" << (long long)ev.ts << "|" << ev.host << "|" << ev.ip << "|"
+      out << "LOG|" << (long long)ev.ts << "|" << esc(ev.host) << "|" << esc(ev.ip) << "|"
           << (int)ev.type << "|" << ev.cpu << "|" << ev.ram << "|" << ev.disk
-          << "|" << ev.detail << "\n";
+          << "|" << esc(ev.detail) << "\n";
     }
     return true;
   }
@@ -192,32 +237,51 @@ public:
         continue;
 
       std::vector<std::string> cols;
-      std::stringstream ss(line);
       std::string tok;
-      while (std::getline(ss, tok, '|'))
-        cols.push_back(tok);
+      bool e = false;
+      for (char c : line) {
+        if (!e && c == '\\') {
+          e = true;
+          tok += c;
+          continue;
+        }
+        if (!e && c == '|') {
+          cols.push_back(tok);
+          tok.clear();
+          continue;
+        }
+        e = false;
+        tok += c;
+      }
+      cols.push_back(tok);
 
       if (cols.size() >= 8 && cols[0] == "HOST") {
         HostState h;
-        h.name = cols[1];
-        h.ip = cols[2];
+        h.name = unesc(cols[1]);
+        h.ip = unesc(cols[2]);
         h.cpu = std::stof(cols[3]);
         h.ram = std::stof(cols[4]);
         h.disk = std::stof(cols[5]);
         h.lastSeen = (time_t)std::stoll(cols[6]);
         h.status = (HostStatus)std::stoi(cols[7]);
+        if (cols.size() >= 12) {
+          h.netRxKBps = std::stof(cols[8]);
+          h.netTxKBps = std::stof(cols[9]);
+          h.load1 = std::stof(cols[10]);
+          h.procCount = std::stoi(cols[11]);
+        }
         h.fd = -1;
         hosts_[h.name] = h;
       } else if (cols.size() >= 9 && cols[0] == "LOG") {
         LogEvent ev;
         ev.ts = (time_t)std::stoll(cols[1]);
-        ev.host = cols[2];
-        ev.ip = cols[3];
+        ev.host = unesc(cols[2]);
+        ev.ip = unesc(cols[3]);
         ev.type = (LogEventType)std::stoi(cols[4]);
         ev.cpu = std::stof(cols[5]);
         ev.ram = std::stof(cols[6]);
         ev.disk = std::stof(cols[7]);
-        ev.detail = cols[8];
+        ev.detail = unesc(cols[8]);
         log_.push_back(ev);
       }
     }
