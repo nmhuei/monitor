@@ -27,19 +27,27 @@ elif [ -f "/usr/lib/x86_64-linux-gnu/libtinfo.so.6" ]; then
     TINFO_LIB="/usr/lib/x86_64-linux-gnu/libtinfo.so.6"
 fi
 
-echo "[1/2] Compiling agent..."
+echo "[1/3] Compiling agent..."
 $CXX $CXXFLAGS -Iinclude \
     src/agent/agent.cpp \
     -o agent \
     $LDFLAGS_AGENT
 echo "      -> agent  ✓"
 
-echo "[2/2] Compiling monitor_server..."
+echo "[2/3] Compiling monitor_server..."
 $CXX $CXXFLAGS -Iinclude $NCURSES_INC \
     src/server/monitor_server.cpp \
     -o monitor_server \
     $LDFLAGS_SERVER $TINFO_LIB
 echo "      -> monitor_server  ✓"
+
+echo "[3/3] Compiling viewer_cli..."
+$CXX $CXXFLAGS -Iinclude $NCURSES_INC \
+    src/viewer/viewer_cli.cpp \
+    -o viewer_cli \
+    $LDFLAGS_SERVER $TINFO_LIB
+
+echo "      -> viewer_cli  ✓"
 
 echo ""
 echo "Build complete!"

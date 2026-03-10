@@ -40,6 +40,7 @@ Monitors CPU, RAM, and Disk from multiple remote machines in a real-time ncurses
 monitor/
 ├── agent                          # Compiled agent binary
 ├── monitor_server                 # Compiled server binary
+├── viewer_cli                     # Interactive remote viewer binary
 ├── build.sh                       # Build script
 ├── CMakeLists.txt                 # CMake build definition
 │
@@ -60,8 +61,10 @@ monitor/
 └── src/
     ├── server/
     │   └── monitor_server.cpp     # Server: accept, dispatch, render
-    └── agent/
-        └── agent.cpp              # Agent: collect, send, auto-reconnect
+    ├── agent/
+    │   └── agent.cpp              # Agent: collect, send, auto-reconnect
+    └── viewer/
+        └── viewer_cli.cpp         # Interactive remote viewer with command bar
 ```
 
 ---
@@ -145,19 +148,31 @@ The dashboard will launch immediately in your terminal.
 | `-config path` | Thresholds config file | `config/thresholds.conf` |
 | `-server-config path` | Server runtime config | `config/server.conf` |
 
-### 2. Remote Viewer (via nc)
+### 2. Remote Viewer
 
-Connect from any machine to view a read-only dashboard:
+#### a) Quick viewer (via nc)
 
 ```bash
 nc server-ip 8785
 ```
 
 - Auto-refreshes every 2 seconds
-- Shows host table with colored bars, per-core CPU summary
 - Multiple viewers can connect simultaneously
 - Press `Ctrl+C` to disconnect
-Press **Q** to quit.
+
+#### b) Interactive viewer_cli (recommended)
+
+```bash
+./viewer_cli -server <server-ip>:8785
+```
+
+- Bottom line is command input area (type `/` to start command)
+- Upper area is execution/result area
+- Built-in commands:
+  - `/history <host> <n>` → show last `n` matched lines for host
+  - `/warning <host> <n>` → show last `n` warning/alert matches for host
+  - `/clear` → clear command output
+- `q` to quit
 
 ### 3. Start agents (on each machine to monitor)
 

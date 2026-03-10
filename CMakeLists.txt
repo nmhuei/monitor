@@ -35,8 +35,17 @@ target_link_libraries(agent
     pthread
 )
 
+# ── viewer_cli ────────────────────────────────────────────────────────────────
+add_executable(viewer_cli
+    src/viewer/viewer_cli.cpp
+)
+target_link_libraries(viewer_cli
+    ${CURSES_LIBRARIES}
+    pthread
+)
+
 # ── Output binaries to project root ──────────────────────────────────────────
-set_target_properties(monitor_server agent PROPERTIES
+set_target_properties(monitor_server agent viewer_cli PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
