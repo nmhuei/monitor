@@ -75,12 +75,12 @@ static void initColors(int themeMode = 0) {
   if (COLORS < 256)
     return;
 
-  // Theme 0: Sunset Violet (default, no aqua)
+  // Theme 0: Matrix Hacker (default)
   if (themeMode == 0) {
-    init_pair(C_HEADER, 16, 171);
-    init_pair(C_BOX, 214, -1);
-    init_pair(C_CYAN, 141, -1);
-    init_pair(C_MAGENTA, 213, -1);
+    init_pair(C_HEADER, 16, 46);
+    init_pair(C_BOX, 46, -1);
+    init_pair(C_CYAN, 118, -1);
+    init_pair(C_MAGENTA, 196, -1);
     init_pair(C_WHITE_BD, 231, -1);
     init_pair(C_GRAY, 245, -1);
     init_pair(C_GREEN, 118, -1);
@@ -117,7 +117,7 @@ static void initColors(int themeMode = 0) {
 
   // Theme 2: Solar Amber
   init_pair(C_HEADER, 16, 220);
-  init_pair(C_BOX, 214, -1);
+  init_pair(C_BOX, 46, -1);
   init_pair(C_CYAN, 178, -1);
   init_pair(C_MAGENTA, 208, -1);
   init_pair(C_WHITE_BD, 230, -1);
@@ -559,77 +559,97 @@ private:
 
   // ── Sparkline Graphs (aggregated) ─────────────────────────────────────────
   void renderGraphs(const Thresholds &th) {
-    size_t maxLen = 0;
-    int online = 0;
-    for (auto &h : sortedHosts_)
-      if (h.status != HostStatus::OFFLINE) {
-        maxLen = std::max(maxLen, h.history.size());
-        online++;
-      }
-
-    std::vector<float> cv(maxLen, 0), rv(maxLen, 0), dv(maxLen, 0);
-    float ac = 0, ar = 0, ad = 0;
-    if (online > 0) {
-      for (auto &h : sortedHosts_) {
-        if (h.status == HostStatus::OFFLINE)
-          continue;
-        ac += h.cpu;
-        ar += h.ram;
-        ad += h.disk;
-        size_t off = maxLen - h.history.size();
-        for (size_t i = 0; i < h.history.size(); i++) {
-          cv[off + i] += h.history[i].cpu;
-          rv[off + i] += h.history[i].ram;
-          dv[off + i] += h.history[i].disk;
-        }
-      }
-      for (auto &v : cv)
-        v /= online;
-      for (auto &v : rv)
-        v /= online;
-      for (auto &v : dv)
-        v /= online;
-      ac /= online;
-      ar /= online;
-      ad /= online;
-    }
-
     int innerW = cols_ - 2, panelW = innerW / 3,
         panelWLast = innerW - panelW * 2;
     int startY = graphY_ + 1;
-    struct G {
-      const char *t;
-      std::vector<float> &v;
-      float a;
-      char m;
-      int c;
-      int x;
-      int w;
-    };
-    std::vector<G> gs = {
-        {"CPU %", cv, ac, 'c', C_GREEN, 1, panelW},
-        {"RAM %", rv, ar, 'r', C_CYAN, 1 + panelW, panelW},
-        {"DISK %", dv, ad, 'd', C_YELLOW, 1 + panelW * 2, panelWLast},
-    };
 
-    for (auto &g : gs) {
-      int x0 = g.x, pw = g.w;
+    int online = 0, offline = 0, warn = 0, alert = 0;
+    float sumCpu = 0, sumRam = 0, sumDisk = 0;
+    std::string hotCpu = "-", hotRam = "-", hotDisk = "-";
+    float maxCpu = -1, maxRam = -1, maxDisk = -1;
+
+    for (const auto &h : sortedHosts_) {
+      if (h.status == HostStatus::OFFLINE) {
+        offline++;
+        continue;
+      }
+      online++;
+      sumCpu += h.cpu;
+      sumRam += h.ram;
+      sumDisk += h.disk;
+      if (h.status == HostStatus::WARNING)
+        warn++;
+      if (h.status == HostStatus::ALERT)
+        alert++;
+      if (h.cpu > maxCpu) { maxCpu = h.cpu; hotCpu = h.name; }
+      if (h.ram > maxRam) { maxRam = h.ram; hotRam = h.name; }
+      if (h.disk > maxDisk){ maxDisk = h.disk; hotDisk = h.name; }
+    }
+
+    float avgCpu = online ? sumCpu / online : 0;
+    float avgRam = online ? sumRam / online : 0;
+    float avgDisk = online ? sumDisk / online : 0;
+    int threat = std::min(100, alert * 30 + warn * 10 + (int)(avgCpu * 0.2f));
+
+    auto drawPanel = [&](int x0, int pw, const char *title) {
       if (x0 > 1) {
         attron(COLOR_PAIR(C_BOX) | A_BOLD);
         for (int r = startY; r < startY + graphH_; r++)
           mvaddstr(r, x0, BOX_V);
         attroff(COLOR_PAIR(C_BOX) | A_BOLD);
       }
-      int cx = (x0 > 1) ? x0 + 1 : x0, cw = (x0 > 1) ? pw - 1 : pw;
-      drawSparkTitle(startY, cx, cw, x0 + pw, g.t);
-      drawSparkline(startY + 1, cx, cw - 1, 2, g.v, g.m, th);
-      char buf[16];
-      snprintf(buf, sizeof(buf), "%5.1f%%", g.a);
-      int co = pctColor(g.a, "", th, g.m);
-      attron(COLOR_PAIR(co) | A_BOLD);
-      mvaddstr(startY + graphH_ - 1, x0 + pw - (int)strlen(buf) - 1, buf);
-      attroff(COLOR_PAIR(co) | A_BOLD);
-    }
+      attron(COLOR_PAIR(C_BOX) | A_BOLD);
+      mvaddstr(startY, x0 + (x0 > 1 ? 1 : 0), LINE_H);
+      addstr(" ");
+      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+      attron(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+      addstr(title);
+      attroff(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+      attron(COLOR_PAIR(C_BOX) | A_BOLD);
+      addstr(" ");
+      int cur = getcurx(stdscr);
+      for (int i = cur; i < x0 + pw; i++)
+        addstr(LINE_H);
+      attroff(COLOR_PAIR(C_BOX) | A_BOLD);
+    };
+
+    // Panel 1: threat score
+    int x1 = 1, w1 = panelW;
+    drawPanel(x1, w1, "TACTICAL RISK");
+    int cRisk = threat >= 70 ? C_RED : threat >= 35 ? C_YELLOW : C_GREEN;
+    attron(COLOR_PAIR(cRisk) | A_BOLD);
+    mvprintw(startY + 1, x1 + 2, "THREAT: %3d%%", threat);
+    attroff(COLOR_PAIR(cRisk) | A_BOLD);
+    attron(COLOR_PAIR(C_CYAN));
+    mvprintw(startY + 2, x1 + 2, "ALERT:%d  WARN:%d", alert, warn);
+    mvprintw(startY + 3, x1 + 2, "ONLINE:%d OFF:%d", online, offline);
+    attroff(COLOR_PAIR(C_CYAN));
+
+    // Panel 2: hot targets
+    int x2 = 1 + panelW, w2 = panelW;
+    drawPanel(x2, w2, "HOT TARGETS");
+    attron(COLOR_PAIR(C_RED) | A_BOLD);
+    mvprintw(startY + 1, x2 + 2, "CPU : %s %4.1f%%", trunc(hotCpu, 10).c_str(), std::max(0.f,maxCpu));
+    attroff(COLOR_PAIR(C_RED) | A_BOLD);
+    attron(COLOR_PAIR(C_YELLOW) | A_BOLD);
+    mvprintw(startY + 2, x2 + 2, "RAM : %s %4.1f%%", trunc(hotRam, 10).c_str(), std::max(0.f,maxRam));
+    attroff(COLOR_PAIR(C_YELLOW) | A_BOLD);
+    attron(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+    mvprintw(startY + 3, x2 + 2, "DISK: %s %4.1f%%", trunc(hotDisk, 10).c_str(), std::max(0.f,maxDisk));
+    attroff(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+
+    // Panel 3: fleet health
+    int x3 = 1 + panelW * 2, w3 = panelWLast;
+    drawPanel(x3, w3, "FLEET HEALTH");
+    attron(COLOR_PAIR(pctColor(avgCpu, "", th, 'c')) | A_BOLD);
+    mvprintw(startY + 1, x3 + 2, "AVG CPU : %5.1f%%", avgCpu);
+    attroff(COLOR_PAIR(pctColor(avgCpu, "", th, 'c')) | A_BOLD);
+    attron(COLOR_PAIR(pctColor(avgRam, "", th, 'r')) | A_BOLD);
+    mvprintw(startY + 2, x3 + 2, "AVG RAM : %5.1f%%", avgRam);
+    attroff(COLOR_PAIR(pctColor(avgRam, "", th, 'r')) | A_BOLD);
+    attron(COLOR_PAIR(pctColor(avgDisk, "", th, 'd')) | A_BOLD);
+    mvprintw(startY + 3, x3 + 2, "AVG DISK: %5.1f%%", avgDisk);
+    attroff(COLOR_PAIR(pctColor(avgDisk, "", th, 'd')) | A_BOLD);
   }
 
   void drawSparkTitle(int y, int x, int w, int endX, const char *title) {
