@@ -44,7 +44,9 @@ monitor/
 ├── CMakeLists.txt                 # CMake build definition
 │
 ├── config/
-│   └── thresholds.conf            # Alert thresholds config
+│   ├── thresholds.conf            # Alert thresholds config
+│   ├── server.conf                # Server behavior (IP limit, state backup, demo interval)
+│   └── agent.conf                 # Agent retry/exit policy
 │
 ├── include/
 │   ├── protocol.hpp               # Shared constants & types
@@ -141,6 +143,7 @@ The dashboard will launch immediately in your terminal.
 | `-port N` | Agent connection port | `8784` |
 | `-vport N` | Remote viewer port | `port + 1` |
 | `-config path` | Thresholds config file | `config/thresholds.conf` |
+| `-server-config path` | Server runtime config | `config/server.conf` |
 
 ### 2. Remote Viewer (via nc)
 
@@ -182,7 +185,8 @@ Press **Q** to quit.
 ---
 
 ## Configuration
-t
+
+### 1) Thresholds
 Edit `config/thresholds.conf`:
 
 ```ini
@@ -203,7 +207,7 @@ When a threshold is exceeded:
 - The log panel shows an **ALERT** entry with blinking warning
 - The status badge shows `● ALERT`
 
-Agent retry policy (`config/agent.conf`):
+### 2) Agent retry policy (`config/agent.conf`)
 
 ```ini
 # Number of consecutive failed connect attempts before agent exits
@@ -213,6 +217,27 @@ MAX_CONNECT_RETRIES=12
 # Delay between retries
 RECONNECT_INTERVAL_SEC=5
 ```
+
+### 3) Server runtime policy (`config/server.conf`)
+
+```ini
+# Limit concurrent agent connections per source IP
+MAX_AGENTS_PER_IP=2
+
+# Auto-save in-memory state every N seconds
+BACKUP_INTERVAL_SEC=10
+
+# Agent send interval used by demo scripts
+AGENT_INTERVAL_SEC=2
+
+# Persisted state file path
+STATE_FILE=data/monitor_state.db
+```
+
+What this gives you:
+- monitor server restores state after restart (from `STATE_FILE`)
+- one IP cannot flood server with unlimited agents
+- demo scripts can change agent interval by config only
 
 ---
 
@@ -247,6 +272,7 @@ JSON payload:
 | `Esc` / `Backspace` | Return to overview / close |
 | `↑` / `↓` | Scroll log (overview) or cores/history (detail) |
 | `PgUp` / `PgDn` | Scroll fast |
+| `U` / `Ctrl+U` | Toggle UI mode (BLOODLINE / MOCHA) |
 | `/` | Open command bar |
 
 ### Commands
@@ -258,6 +284,9 @@ Press `/` to open the command bar, then type a command and press `Enter`:
 | `/help` | Show help overlay with all keybindings |
 | `/viewer <host>` | Jump directly to host detail view |
 | `/history <host>` | Show scrollable history table for host |
+
+Theme/UI hotkey:
+- `U` or `Ctrl+U`: toggle UI mode (**BLOODLINE** ↔ **MOCHA**)
 
 > Tip: Commands support partial host name matching (e.g., `/viewer web` matches `web-1`)
 
@@ -298,6 +327,21 @@ Use `Tab` / `Shift+Tab` to cycle through hosts, `↑↓` to scroll cores, `Esc` 
 
 ---
 
+## Demo Scripts
+
+```bash
+# 1 monitor terminal only, 2 agents hidden in background
+./run_demo_terminals.sh
+
+# stop hidden agents
+./stop_agents.sh
+
+# classic local demo (monitor + 2 agents)
+./run_demo.sh
+```
+
+---
+
 ## Features
 
 - **Real-time graphs** — sparkline-style CPU/RAM/Disk history (last 60 samples) with block characters
@@ -305,8 +349,10 @@ Use `Tab` / `Shift+Tab` to cycle through hosts, `↑↓` to scroll cores, `Esc` 
 - **Host table** — progress bars, percentage, color-coded status
 - **Connection log** — 500-entry scrollable log of CONNECT / METRIC / ALERT / DISCONNECT events
 - **Alert system** — configurable global and per-host thresholds; red highlighting + blinking
-- **Auto-reconnect** — agent retries every 5 seconds on disconnect
-- **Thread-safe** — server handles unlimited concurrent agents
+- **Auto-reconnect with stop policy** — agent retries by policy (`agent.conf`), can auto-exit after N failed attempts
+- **State persistence** — server periodically backups state and restores on restart
+- **Per-IP connection guard** — limit concurrent agents from one source IP (`MAX_AGENTS_PER_IP`)
+- **Thread-safe** — concurrent agent handling with protected shared store
 - **Zero external deps** — only ncurses + POSIX; custom JSON parser included
 - **Color scheme** — green (OK) → yellow (warning) → red (alert) → gray (offline)
 
