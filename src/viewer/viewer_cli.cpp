@@ -43,6 +43,18 @@ static int connectTo(const std::string &host, uint16_t port) {
 }
 
 
+static std::string sanitizeText(const std::string &in) {
+  std::string out;
+  out.reserve(in.size());
+  for (unsigned char c : in) {
+    if (c == '\n' || c == '\t' || (c >= 32 && c <= 126))
+      out.push_back((char)c);
+    else
+      out.push_back(' ');
+  }
+  return out;
+}
+
 static std::string stripAnsi(const std::string &in) {
   std::string out;
   out.reserve(in.size());
@@ -122,7 +134,7 @@ int main(int argc, char **argv) {
   auto addFrame = [&](const std::string &frame) {
     if (frame.empty())
       return;
-    std::string clean = stripAnsi(frame);
+    std::string clean = sanitizeText(stripAnsi(frame));
     lastFrame = clean;
     frameHist.push_back({time(nullptr), clean});
     while (frameHist.size() > 120)
@@ -149,8 +161,17 @@ int main(int argc, char **argv) {
     getmaxyx(stdscr, rows, cols);
     erase();
 
-    // Black screen by default: only show command results when available.
-    if (!commandOutput.empty()) {
+    // Idle screen: show available commands. Results area appears after command runs.
+    if (commandOutput.empty()) {
+      int y = 1;
+      mvaddstr(y++, 0, "viewer_cli ready. Available commands:");
+      mvaddstr(y++, 0, "  /history <host> <n>   - show last n matched lines for host");
+      mvaddstr(y++, 0, "  /warning <host> <n>   - show last n ALERT/WARN matches");
+      mvaddstr(y++, 0, "  /clear                - clear output");
+      mvaddstr(y++, 0, "  /help                 - show this command list");
+      y++;
+      mvaddstr(y++, 0, "Tips: press '/' to type command, Enter to run, Esc to cancel, q to quit.");
+    } else {
       int oy = 1;
       mvaddstr(oy, 0, "Command output:");
       int idx = 1;
@@ -162,7 +183,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    std::string prompt = cmdMode ? ("/" + cmd) : "Press / to enter command, q to quit";
+    std::string prompt = cmdMode ? ("/" + cmd) : "Press / to enter command, /help for list, q to quit";
     mvhline(rows - 1, 0, ' ', cols);
     mvaddnstr(rows - 1, 0, prompt.c_str(), cols - 1);
 
@@ -249,6 +270,13 @@ int main(int argc, char **argv) {
           commandOutput.push_back("No warning match for host=" + hostArg);
       } else if (verb == "clear") {
         commandOutput.clear();
+      } else if (verb == "help") {
+        commandOutput = {
+            "Available commands:",
+            "  /history <host> <n>  - last n lines containing host",
+            "  /warning <host> <n>  - last n ALERT/WARN lines containing host",
+            "  /clear               - clear command output",
+        };
       } else {
         commandOutput.push_back("Unknown command. Use: /history <host> <n> | /warning <host> <n> | /clear");
       }
