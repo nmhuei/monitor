@@ -55,9 +55,11 @@ open_term() {
   fi
 }
 
-# Open only monitor terminal
+# Open monitor + viewer terminals (separate windows)
 open_term "MONITOR" "cd '$ROOT_DIR' && ./monitor_server -port $PORT -vport $VPORT -config config/thresholds.conf -server-config config/server.conf"
+sleep 1
+open_term "VIEWER" "cd '$ROOT_DIR' && ./viewer_cli -server 127.0.0.1:$VPORT"
 
-echo "Opened MONITOR terminal only. Agents are running hidden in background."
+echo "Opened MONITOR + VIEWER terminals. Agents are running hidden in background."
 echo "Agent logs: $LOG_DIR/agent1.log, $LOG_DIR/agent2.log"
 echo "To stop hidden agents: kill \$(cat $PID_DIR/agent1.pid) \$(cat $PID_DIR/agent2.pid)"
