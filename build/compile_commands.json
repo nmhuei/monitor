@@ -1,13 +1,13 @@
 [
 {
   "directory": "/home/light/Project/Test_coding/monitor-system/monitor/build",
-  "command": "/usr/bin/clang++  -I/home/light/Project/Test_coding/monitor-system/monitor/include -g -std=c++20 -O2 -Wall -Wextra -pthread -o CMakeFiles/monitor_server.dir/src/server/monitor_server.cpp.o -c /home/light/Project/Test_coding/monitor-system/monitor/src/server/monitor_server.cpp",
+  "command": "/usr/bin/clang++ -I/home/light/Project/Test_coding/monitor-system/monitor/include -g -std=c++20 -O2 -Wall -Wextra -pthread -o CMakeFiles/monitor_server.dir/src/server/monitor_server.cpp.o -c /home/light/Project/Test_coding/monitor-system/monitor/src/server/monitor_server.cpp",
   "file": "/home/light/Project/Test_coding/monitor-system/monitor/src/server/monitor_server.cpp",
   "output": "CMakeFiles/monitor_server.dir/src/server/monitor_server.cpp.o"
 },
 {
   "directory": "/home/light/Project/Test_coding/monitor-system/monitor/build",
-  "command": "/usr/bin/clang++  -I/home/light/Project/Test_coding/monitor-system/monitor/include -g -std=c++20 -O2 -Wall -Wextra -pthread -o CMakeFiles/agent.dir/src/agent/agent.cpp.o -c /home/light/Project/Test_coding/monitor-system/monitor/src/agent/agent.cpp",
+  "command": "/usr/bin/clang++ -I/home/light/Project/Test_coding/monitor-system/monitor/include -g -std=c++20 -O2 -Wall -Wextra -pthread -o CMakeFiles/agent.dir/src/agent/agent.cpp.o -c /home/light/Project/Test_coding/monitor-system/monitor/src/agent/agent.cpp",
   "file": "/home/light/Project/Test_coding/monitor-system/monitor/src/agent/agent.cpp",
   "output": "CMakeFiles/agent.dir/src/agent/agent.cpp.o"
 }
