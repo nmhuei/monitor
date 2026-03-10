@@ -42,6 +42,28 @@ static int connectTo(const std::string &host, uint16_t port) {
   return fd;
 }
 
+
+static std::string stripAnsi(const std::string &in) {
+  std::string out;
+  out.reserve(in.size());
+  bool esc = false;
+  for (size_t i = 0; i < in.size(); ++i) {
+    unsigned char c = (unsigned char)in[i];
+    if (!esc) {
+      if (c == 0x1B) {
+        esc = true;
+      } else {
+        out.push_back((char)c);
+      }
+    } else {
+      // CSI sequence typically ESC [ ... letter
+      if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+        esc = false;
+    }
+  }
+  return out;
+}
+
 static std::vector<std::string> splitLines(const std::string &s) {
   std::vector<std::string> out;
   std::stringstream ss(s);
@@ -100,8 +122,9 @@ int main(int argc, char **argv) {
   auto addFrame = [&](const std::string &frame) {
     if (frame.empty())
       return;
-    lastFrame = frame;
-    frameHist.push_back({time(nullptr), frame});
+    std::string clean = stripAnsi(frame);
+    lastFrame = clean;
+    frameHist.push_back({time(nullptr), clean});
     while (frameHist.size() > 120)
       frameHist.pop_front();
   };
@@ -126,15 +149,10 @@ int main(int argc, char **argv) {
     getmaxyx(stdscr, rows, cols);
     erase();
 
-    std::vector<std::string> lines = splitLines(lastFrame);
-    int maxView = std::max(1, rows - 2);
-    for (int i = 0; i < (int)lines.size() && i < maxView; ++i) {
-      mvaddnstr(i, 0, lines[i].c_str(), cols - 1);
-    }
-
+    // Black screen by default: only show command results when available.
     if (!commandOutput.empty()) {
-      int oy = std::max(0, rows - 6);
-      mvaddstr(oy, 0, "---- command output ----");
+      int oy = 1;
+      mvaddstr(oy, 0, "Command output:");
       int idx = 1;
       for (auto &l : commandOutput) {
         if (oy + idx >= rows - 1)
@@ -232,7 +250,7 @@ int main(int argc, char **argv) {
       } else if (verb == "clear") {
         commandOutput.clear();
       } else {
-        commandOutput.push_back("Unknown command. Use: /history /warning /clear");
+        commandOutput.push_back("Unknown command. Use: /history <host> <n> | /warning <host> <n> | /clear");
       }
 
       continue;
