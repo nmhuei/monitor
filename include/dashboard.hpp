@@ -42,6 +42,12 @@ enum Color {
   C_CYAN = 8,
   C_MAGENTA = 9,
   C_WHITE_BD = 10,
+  C_RAIN1 = 11,
+  C_RAIN2 = 12,
+  C_RAIN3 = 13,
+  C_RAIN4 = 14,
+  C_RAIN5 = 15,
+  C_RAIN6 = 16,
 };
 
 static void initColors(int themeMode = 0) {
@@ -54,26 +60,38 @@ static void initColors(int themeMode = 0) {
   init_pair(C_YELLOW, COLOR_YELLOW, -1);
   init_pair(C_RED, COLOR_RED, -1);
   init_pair(C_GRAY, COLOR_WHITE, -1);
-  init_pair(C_HEADER, COLOR_BLACK, COLOR_CYAN);
-  init_pair(C_BOX, COLOR_CYAN, -1);
-  init_pair(C_CYAN, COLOR_CYAN, -1);
+  init_pair(C_HEADER, COLOR_BLACK, COLOR_MAGENTA);
+  init_pair(C_BOX, COLOR_YELLOW, -1);
+  init_pair(C_CYAN, COLOR_BLUE, -1);
   init_pair(C_MAGENTA, COLOR_MAGENTA, -1);
   init_pair(C_WHITE_BD, COLOR_WHITE, -1);
+  init_pair(C_RAIN1, COLOR_RED, -1);
+  init_pair(C_RAIN2, COLOR_YELLOW, -1);
+  init_pair(C_RAIN3, COLOR_GREEN, -1);
+  init_pair(C_RAIN4, COLOR_CYAN, -1);
+  init_pair(C_RAIN5, COLOR_BLUE, -1);
+  init_pair(C_RAIN6, COLOR_MAGENTA, -1);
 
   if (COLORS < 256)
     return;
 
-  // Theme 0: Vivid Aqua (default)
+  // Theme 0: Sunset Violet (default, no aqua)
   if (themeMode == 0) {
-    init_pair(C_HEADER, 16, 51);
-    init_pair(C_BOX, 45, -1);
-    init_pair(C_CYAN, 51, -1);
+    init_pair(C_HEADER, 16, 171);
+    init_pair(C_BOX, 214, -1);
+    init_pair(C_CYAN, 141, -1);
     init_pair(C_MAGENTA, 213, -1);
     init_pair(C_WHITE_BD, 231, -1);
     init_pair(C_GRAY, 245, -1);
-    init_pair(C_GREEN, 46, -1);
-    init_pair(C_YELLOW, 226, -1);
-    init_pair(C_RED, 196, -1);
+    init_pair(C_GREEN, 118, -1);
+    init_pair(C_YELLOW, 220, -1);
+    init_pair(C_RED, 203, -1);
+    init_pair(C_RAIN1, 196, -1);
+    init_pair(C_RAIN2, 208, -1);
+    init_pair(C_RAIN3, 226, -1);
+    init_pair(C_RAIN4, 82, -1);
+    init_pair(C_RAIN5, 45, -1);
+    init_pair(C_RAIN6, 201, -1);
     return;
   }
 
@@ -88,19 +106,31 @@ static void initColors(int themeMode = 0) {
     init_pair(C_GREEN, 118, -1);
     init_pair(C_YELLOW, 220, -1);
     init_pair(C_RED, 197, -1);
+    init_pair(C_RAIN1, 196, -1);
+    init_pair(C_RAIN2, 208, -1);
+    init_pair(C_RAIN3, 226, -1);
+    init_pair(C_RAIN4, 46, -1);
+    init_pair(C_RAIN5, 51, -1);
+    init_pair(C_RAIN6, 201, -1);
     return;
   }
 
   // Theme 2: Solar Amber
   init_pair(C_HEADER, 16, 220);
   init_pair(C_BOX, 214, -1);
-  init_pair(C_CYAN, 45, -1);
+  init_pair(C_CYAN, 178, -1);
   init_pair(C_MAGENTA, 208, -1);
   init_pair(C_WHITE_BD, 230, -1);
   init_pair(C_GRAY, 246, -1);
   init_pair(C_GREEN, 82, -1);
   init_pair(C_YELLOW, 220, -1);
   init_pair(C_RED, 203, -1);
+  init_pair(C_RAIN1, 196, -1);
+  init_pair(C_RAIN2, 202, -1);
+  init_pair(C_RAIN3, 226, -1);
+  init_pair(C_RAIN4, 118, -1);
+  init_pair(C_RAIN5, 45, -1);
+  init_pair(C_RAIN6, 201, -1);
 }
 
 static std::string fmtTime(time_t t) {
@@ -514,9 +544,12 @@ private:
         std::string(SYM_DIAMOND) + " DISTRIBUTED SYSTEM MONITOR " + SYM_DIAMOND;
     int tx = (cols_ - (int)title.size()) / 2;
     if (tx > 12) {
-      attron(COLOR_PAIR(C_MAGENTA) | A_BOLD);
-      mvaddstr(y, tx, title.c_str());
-      attroff(COLOR_PAIR(C_MAGENTA) | A_BOLD);
+      const int rainbow[] = {C_RAIN1, C_RAIN2, C_RAIN3, C_RAIN4, C_RAIN5, C_RAIN6};
+      for (size_t i = 0; i < title.size(); i++) {
+        attron(COLOR_PAIR(rainbow[i % 6]) | A_BOLD);
+        mvaddch(y, tx + (int)i, title[i]);
+        attroff(COLOR_PAIR(rainbow[i % 6]) | A_BOLD);
+      }
     }
     int hintLen = (int)strlen(hint);
     if (cols_ - hintLen - 3 > 0)

@@ -6,9 +6,22 @@ cd "$ROOT_DIR"
 
 PORT="${PORT:-8784}"
 VPORT="${VPORT:-8785}"
-INTERVAL="${INTERVAL:-2}"
 AGENT1_NAME="${AGENT1_NAME:-web-1}"
 AGENT2_NAME="${AGENT2_NAME:-db-1}"
+CFG_FILE="$ROOT_DIR/config/server.conf"
+
+read_cfg() {
+  local key="$1" def="$2"
+  if [[ -f "$CFG_FILE" ]]; then
+    local v
+    v=$(grep -E "^${key}=" "$CFG_FILE" | tail -n1 | cut -d'=' -f2- || true)
+    v="${v//[[:space:]]/}"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+  fi
+  echo "$def"
+}
+
+INTERVAL="${INTERVAL:-$(read_cfg AGENT_INTERVAL_SEC 2)}"
 
 cleanup() {
   echo
