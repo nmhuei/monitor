@@ -58,6 +58,12 @@ static std::string makeBar(float pct, int width) {
   return bar;
 }
 
+static std::string padRight(const std::string &s, int n) {
+  if ((int)s.size() >= n)
+    return s.substr(0, n);
+  return s + std::string(n - (int)s.size(), ' ');
+}
+
 static std::string statusSymbol(HostStatus s) {
   switch (s) {
   case HostStatus::ALERT:
@@ -72,117 +78,133 @@ static std::string statusSymbol(HostStatus s) {
   return "?";
 }
 
-// Render a complete ANSI dashboard frame
+// Render a complete ANSI dashboard frame (hacker style, close to ncurses UI)
 inline std::string renderFrame(const std::vector<HostState> &hosts,
                                const Thresholds &th) {
   std::ostringstream o;
-  o << CLR; // clear screen
+  o << CLR;
 
-  int W = 80;
-  std::string hline(W, '=');
-  std::string sline(W, '-');
+  const int W = 118;
+  auto line = [&](char c) { return std::string(W, c); };
+
+  int online = 0, offline = 0, warn = 0, alert = 0;
+  float sumCpu = 0, sumRam = 0, sumDisk = 0;
+  std::string hotCpu = "-", hotRam = "-", hotDisk = "-";
+  float maxCpu = -1, maxRam = -1, maxDisk = -1;
+
+  for (const auto &h : hosts) {
+    if (h.status == HostStatus::OFFLINE) {
+      offline++;
+      continue;
+    }
+    online++;
+    sumCpu += h.cpu;
+    sumRam += h.ram;
+    sumDisk += h.disk;
+    if (h.status == HostStatus::WARNING)
+      warn++;
+    if (h.status == HostStatus::ALERT)
+      alert++;
+    if (h.cpu > maxCpu) {
+      maxCpu = h.cpu;
+      hotCpu = h.name;
+    }
+    if (h.ram > maxRam) {
+      maxRam = h.ram;
+      hotRam = h.name;
+    }
+    if (h.disk > maxDisk) {
+      maxDisk = h.disk;
+      hotDisk = h.name;
+    }
+  }
+
+  float avgCpu = online ? sumCpu / online : 0;
+  float avgRam = online ? sumRam / online : 0;
+  float avgDisk = online ? sumDisk / online : 0;
+  int threat = std::min(100, alert * 30 + warn * 10 + (int)(avgCpu * 0.2f));
 
   // Header
-  o << ABGCYN << BOLD;
   std::string ts = fmtTime(time(nullptr));
-  o << " " << ts
-    << "   ◈ DISTRIBUTED SYSTEM MONITOR ◈   [nc viewer - read only]";
-  int pad = W - (int)ts.size() - 55;
-  for (int i = 0; i < pad; i++)
-    o << ' ';
-  o << RST << "\n";
-  o << ACYN << hline << RST << "\n";
+  std::string title = "◈ DISTRIBUTED SYSTEM MONITOR ◈";
+  o << ABGCYN << BOLD << " " << ts << "  " << title
+    << "  [nc viewer - read only]" << RST << "\n";
+  o << ACYN << line('=') << RST << "\n";
 
-  // Count stats
-  int online = 0, alerts = 0;
-  for (auto &h : hosts) {
-    if (h.status != HostStatus::OFFLINE)
-      online++;
-    if (h.status == HostStatus::ALERT)
-      alerts++;
-  }
-  o << AWHT << " Hosts: " << ACYN << (int)hosts.size() << AWHT
-    << "  Online: " << AGRN << online << AWHT
-    << "  Alerts: " << (alerts > 0 ? ARED : AGRN) << alerts << RST << "\n";
-  o << ACYN << sline << RST << "\n";
+  // Tactical panels (single-line compact)
+  const char *riskCol = threat >= 70 ? ARED : threat >= 35 ? AYEL : AGRN;
+  o << AWHT << " RISK:" << riskCol << padRight(std::to_string(threat) + "%", 5)
+    << RST << AWHT << " | ALERT:" << ARED << alert << RST << AWHT
+    << " WARN:" << AYEL << warn << RST << AWHT << " ONLINE:" << AGRN << online
+    << RST << AWHT << " OFF:" << AGRY << offline << RST << AWHT << " || HOT -> "
+    << ARED << "CPU " << padRight(hotCpu, 12) << " " << std::max(0.f, maxCpu)
+    << "% " << AYEL << "RAM " << padRight(hotRam, 12) << " "
+    << std::max(0.f, maxRam) << "% " << ACYN << "DSK " << padRight(hotDisk, 12)
+    << " " << std::max(0.f, maxDisk) << "%" << RST << "\n";
 
-  // Table header
-  o << AWHT << BOLD;
-  char hdr[128];
-  snprintf(hdr, sizeof(hdr), " %-14s %-18s %-18s %-18s %s", "HOST", "CPU",
-           "RAM", "DISK", "STATUS");
-  o << hdr << RST << "\n";
-  o << ACYN << sline << RST << "\n";
+  o << AWHT << " AVG:" << pctAnsi(avgCpu, "", th, 'c') << "CPU " << avgCpu
+    << "% " << pctAnsi(avgRam, "", th, 'r') << "RAM " << avgRam << "% "
+    << pctAnsi(avgDisk, "", th, 'd') << "DISK " << avgDisk << "%" << RST
+    << "\n";
 
-  // Host rows
-  int barW = 10;
-  for (auto &h : hosts) {
-    bool off = (h.status == HostStatus::OFFLINE);
+  o << ACYN << line('-') << RST << "\n";
 
-    // Host name
-    std::string name = h.name;
-    if (name.size() > 14)
-      name = name.substr(0, 14);
-    while (name.size() < 14)
-      name += ' ';
+  // Host table
+  o << AWHT << BOLD << " " << padRight("HOST", 14) << " " << padRight("CPU", 22)
+    << " " << padRight("RAM", 22) << " " << padRight("DISK", 22) << " STATUS"
+    << RST << "\n";
+  o << ACYN << line('-') << RST << "\n";
 
-    if (off) {
+  const int barW = 12;
+  for (const auto &h : hosts) {
+    std::string name = padRight(h.name, 14);
+    if (h.status == HostStatus::OFFLINE) {
       o << AGRY << DIM << " " << name << "  --- OFFLINE ---" << RST << "\n";
       continue;
     }
 
-    o << " " << AWHT << name << " ";
+    char b1[10], b2[10], b3[10];
+    snprintf(b1, sizeof(b1), "%5.1f%%", h.cpu);
+    snprintf(b2, sizeof(b2), "%5.1f%%", h.ram);
+    snprintf(b3, sizeof(b3), "%5.1f%%", h.disk);
 
-    // CPU bar + pct
-    o << pctAnsi(h.cpu, h.name, th, 'c');
-    o << makeBar(h.cpu, barW);
-    char pctBuf[8];
-    snprintf(pctBuf, sizeof(pctBuf), "%5.1f%% ", h.cpu);
-    o << pctBuf << RST;
-
-    // RAM bar + pct
-    o << pctAnsi(h.ram, h.name, th, 'r');
-    o << makeBar(h.ram, barW);
-    snprintf(pctBuf, sizeof(pctBuf), "%5.1f%% ", h.ram);
-    o << pctBuf << RST;
-
-    // DISK bar + pct
-    o << pctAnsi(h.disk, h.name, th, 'd');
-    o << makeBar(h.disk, barW);
-    snprintf(pctBuf, sizeof(pctBuf), "%5.1f%% ", h.disk);
-    o << pctBuf << RST;
-
-    // Status
+    o << " " << AWHT << name << RST << " ";
+    o << pctAnsi(h.cpu, h.name, th, 'c') << makeBar(h.cpu, barW) << " " << b1
+      << RST << " ";
+    o << pctAnsi(h.ram, h.name, th, 'r') << makeBar(h.ram, barW) << " " << b2
+      << RST << " ";
+    o << pctAnsi(h.disk, h.name, th, 'd') << makeBar(h.disk, barW) << " " << b3
+      << RST << " ";
     o << statusSymbol(h.status);
-
-    // Core count
-    if (h.coreCount > 0) {
+    if (h.coreCount > 0)
       o << AGRY << " [" << h.coreCount << "c]" << RST;
-    }
-
     o << "\n";
   }
 
-  o << ACYN << sline << RST << "\n";
+  o << ACYN << line('-') << RST << "\n";
 
-  // Per-core details for online hosts
-  for (auto &h : hosts) {
+  // Compact per-core line(s)
+  for (const auto &h : hosts) {
     if (h.status == HostStatus::OFFLINE || h.cores.empty())
       continue;
-    o << ACYN << " " << h.name << RST << AGRY << " cores:" << RST << " ";
-    for (int i = 0; i < (int)h.cores.size(); i++) {
+    o << ACYN << " " << padRight(h.name, 12) << RST << AGRY << " cores: " << RST;
+    int limit = std::min((int)h.cores.size(), 12);
+    for (int i = 0; i < limit; i++) {
       float v = h.cores[i];
       o << pctAnsi(v, h.name, th, 'c');
-      char cb[24];
-      snprintf(cb, sizeof(cb), "%2d:%3.0f%%", i, v);
+      char cb[16];
+      snprintf(cb, sizeof(cb), "%d:%2.0f%%", i, v);
       o << cb << RST << " ";
     }
+    if ((int)h.cores.size() > limit)
+      o << AGRY << "..." << RST;
     o << "\n";
   }
 
-  o << ACYN << hline << RST << "\n";
-  o << AGRY << " Auto-refresh every 2s | Press Ctrl+C to disconnect" << RST
-    << "\n";
+  o << ACYN << line('=') << RST << "\n";
+  o << AGRY
+    << " Auto-refresh every 2s | Ctrl+C disconnect | Viewer is read-only snapshot"
+    << RST << "\n";
 
   return o.str();
 }
