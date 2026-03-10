@@ -7,9 +7,21 @@ VPORT="${VPORT:-8785}"
 INTERVAL="${INTERVAL:-2}"
 AGENT1_NAME="${AGENT1_NAME:-web-1}"
 AGENT2_NAME="${AGENT2_NAME:-db-1}"
+PID_DIR="$ROOT_DIR/.pids"
+LOG_DIR="$ROOT_DIR/.logs"
 
+mkdir -p "$PID_DIR" "$LOG_DIR"
 cd "$ROOT_DIR"
 ./build.sh >/dev/null
+
+# Start agents hidden in background
+nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" \
+  >"$LOG_DIR/agent1.log" 2>&1 &
+echo $! > "$PID_DIR/agent1.pid"
+
+nohup ./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" \
+  >"$LOG_DIR/agent2.log" 2>&1 &
+echo $! > "$PID_DIR/agent2.pid"
 
 open_term() {
   local title="$1"
@@ -25,13 +37,14 @@ open_term() {
     x-terminal-emulator -e bash -lc "$cmd; exec bash"
   else
     echo "No supported terminal emulator found (gnome-terminal/xfce4-terminal/konsole/x-terminal-emulator)."
+    echo "Monitor command: ./monitor_server -port $PORT -vport $VPORT -config config/thresholds.conf -server-config config/server.conf"
     exit 1
   fi
 }
 
+# Open only monitor terminal
 open_term "MONITOR" "cd '$ROOT_DIR' && ./monitor_server -port $PORT -vport $VPORT -config config/thresholds.conf -server-config config/server.conf"
-sleep 1
-open_term "AGENT-1" "cd '$ROOT_DIR' && ./agent -server 127.0.0.1:$PORT -interval $INTERVAL -name $AGENT1_NAME"
-open_term "AGENT-2" "cd '$ROOT_DIR' && ./agent -server 127.0.0.1:$PORT -interval $INTERVAL -name $AGENT2_NAME"
 
-echo "Opened 3 terminals: MONITOR, AGENT-1, AGENT-2"
+echo "Opened MONITOR terminal only. Agents are running hidden in background."
+echo "Agent logs: $LOG_DIR/agent1.log, $LOG_DIR/agent2.log"
+echo "To stop hidden agents: kill \$(cat $PID_DIR/agent1.pid) \$(cat $PID_DIR/agent2.pid)"
