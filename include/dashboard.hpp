@@ -44,11 +44,11 @@ enum Color {
   C_WHITE_BD = 10,
 };
 
-static void initColors() {
+static void initColors(int themeMode = 0) {
   start_color();
   use_default_colors();
 
-  // Default fallback palette
+  // Base fallback
   init_pair(C_NORMAL, COLOR_WHITE, -1);
   init_pair(C_GREEN, COLOR_GREEN, -1);
   init_pair(C_YELLOW, COLOR_YELLOW, -1);
@@ -60,22 +60,47 @@ static void initColors() {
   init_pair(C_MAGENTA, COLOR_MAGENTA, -1);
   init_pair(C_WHITE_BD, COLOR_WHITE, -1);
 
-  // Richer 256-color theme when available
-  if (COLORS >= 256) {
-    // header: dark text on bright aqua/teal
+  if (COLORS < 256)
+    return;
+
+  // Theme 0: Vivid Aqua (default)
+  if (themeMode == 0) {
     init_pair(C_HEADER, 16, 51);
-    // frame/lines
     init_pair(C_BOX, 45, -1);
-    // text accents
     init_pair(C_CYAN, 51, -1);
     init_pair(C_MAGENTA, 213, -1);
     init_pair(C_WHITE_BD, 231, -1);
     init_pair(C_GRAY, 245, -1);
-    // status colors
     init_pair(C_GREEN, 46, -1);
     init_pair(C_YELLOW, 226, -1);
     init_pair(C_RED, 196, -1);
+    return;
   }
+
+  // Theme 1: Neon Cyberpunk
+  if (themeMode == 1) {
+    init_pair(C_HEADER, 16, 201);
+    init_pair(C_BOX, 51, -1);
+    init_pair(C_CYAN, 51, -1);
+    init_pair(C_MAGENTA, 201, -1);
+    init_pair(C_WHITE_BD, 230, -1);
+    init_pair(C_GRAY, 244, -1);
+    init_pair(C_GREEN, 118, -1);
+    init_pair(C_YELLOW, 220, -1);
+    init_pair(C_RED, 197, -1);
+    return;
+  }
+
+  // Theme 2: Solar Amber
+  init_pair(C_HEADER, 16, 220);
+  init_pair(C_BOX, 214, -1);
+  init_pair(C_CYAN, 45, -1);
+  init_pair(C_MAGENTA, 208, -1);
+  init_pair(C_WHITE_BD, 230, -1);
+  init_pair(C_GRAY, 246, -1);
+  init_pair(C_GREEN, 82, -1);
+  init_pair(C_YELLOW, 220, -1);
+  init_pair(C_RED, 203, -1);
 }
 
 static std::string fmtTime(time_t t) {
@@ -140,7 +165,7 @@ public:
     curs_set(0);
     keypad(stdscr, TRUE);
     halfdelay(2);
-    initColors();
+    initColors(themeMode_);
     getmaxyx(stdscr, rows_, cols_);
   }
 
@@ -199,6 +224,7 @@ public:
 private:
   int rows_ = 24, cols_ = 80;
   int logScroll_ = 0, histScroll_ = 0;
+  int themeMode_ = 0; // 0=vivid, 1=neon, 2=amber
   ViewMode viewMode_ = ViewMode::OVERVIEW;
   ViewMode prevMode_ = ViewMode::OVERVIEW;
   int selectedIdx_ = 0;
@@ -241,6 +267,12 @@ private:
 
     // ── Normal mode ──
     switch (ch) {
+    case 't':
+    case 'T':
+    case 20: // Ctrl+T
+      themeMode_ = (themeMode_ + 1) % 3;
+      initColors(themeMode_);
+      break;
     case 'q':
     case 'Q':
       endwin();
@@ -410,7 +442,7 @@ private:
                       const Thresholds &thresh) {
     calcOverviewLayout();
     drawOuterFrame();
-    renderHeader("[Tab] Detail [Q] Quit");
+    renderHeader("[Tab] Detail [T] Theme [Q] Quit");
     renderGraphs(thresh);
     renderTable(thresh);
     renderLog(log, thresh);
@@ -900,7 +932,7 @@ private:
     int dtx = (cols_ - (int)dtitle.size()) / 2;
     if (dtx > 12)
       mvaddstr(y, dtx, dtitle.c_str());
-    const char *dhint = "[Tab]Next [Esc]Back [Q]Quit";
+    const char *dhint = "[Tab]Next [T]Theme [Esc]Back [Q]Quit";
     int dhLen = (int)strlen(dhint);
     if (cols_ - dhLen - 3 > 0)
       mvaddstr(y, cols_ - dhLen - 2, dhint);
@@ -1244,7 +1276,7 @@ private:
       mvaddch(y, i, ' ');
     std::string htitle = std::string(SYM_DIAMOND) + " HELP " + SYM_DIAMOND;
     mvaddstr(y, (cols_ - (int)htitle.size()) / 2, htitle.c_str());
-    mvaddstr(y, cols_ - 14, "[Esc] Close");
+    mvaddstr(y, cols_ - 24, "[T] Theme  [Esc] Close");
     attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
 
     attron(COLOR_PAIR(C_BOX) | A_BOLD);
@@ -1267,6 +1299,7 @@ private:
     HelpLine nav[] = {
         {"Tab", "Enter detail view / next host"},
         {"Shift+Tab", "Previous host"},
+        {"T / Ctrl+T", "Cycle theme (Vivid/Neon/Amber)"},
         {"Esc", "Back to overview / close"},
         {"\u2191 \u2193", "Scroll up / down"},
         {"PgUp / PgDn", "Scroll fast"},
