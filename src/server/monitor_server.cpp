@@ -4,6 +4,7 @@
  * Accepts agent connections, collects metrics, renders btop++-style dashboard.
  *
  * Usage: ./monitor_server [-port 8784] [-config config/thresholds.conf]
+ *                         [-server-config config/server.conf]
  */
 #include "../include/ansi_viewer.hpp"
 #include "../include/dashboard.hpp"
@@ -23,8 +24,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -40,6 +45,51 @@ static std::atomic<bool> g_running{true};
 static std::mutex g_fdMtx;
 static std::unordered_map<int, std::string> g_fdHost;
 static std::unordered_map<int, std::string> g_fdIP;
+
+struct ServerConfig {
+  int maxAgentsPerIP = 2;
+  int backupIntervalSec = 10;
+  std::string stateFile = "data/monitor_state.db";
+};
+
+static ServerConfig g_cfg;
+
+static std::string trim(const std::string &s) {
+  auto b = s.find_first_not_of(" \t\r\n");
+  auto e = s.find_last_not_of(" \t\r\n");
+  return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+}
+
+static ServerConfig loadServerConfig(const std::string &path) {
+  ServerConfig cfg;
+  std::ifstream in(path);
+  if (!in)
+    return cfg;
+
+  std::string line;
+  while (std::getline(in, line)) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#')
+      continue;
+    auto eq = line.find('=');
+    if (eq == std::string::npos)
+      continue;
+    std::string k = trim(line.substr(0, eq));
+    std::string v = trim(line.substr(eq + 1));
+
+    try {
+      if (k == "MAX_AGENTS_PER_IP")
+        cfg.maxAgentsPerIP = std::max(1, std::stoi(v));
+      else if (k == "BACKUP_INTERVAL_SEC")
+        cfg.backupIntervalSec = std::max(1, std::stoi(v));
+      else if (k == "STATE_FILE")
+        cfg.stateFile = v;
+    } catch (...) {
+      // ignore malformed value
+    }
+  }
+  return cfg;
+}
 
 // ── Client handler thread ────────────────────────────────────────────────────
 static void handleClient(int fd, std::string ip) {
@@ -103,6 +153,15 @@ static void handleClient(int fd, std::string ip) {
 
 // ── Render loop (runs in main thread with ncurses)
 // ────────────────────────────
+static void persistLoop() {
+  while (g_running) {
+    g_store.saveToFile(g_cfg.stateFile);
+    std::this_thread::sleep_for(std::chrono::seconds(g_cfg.backupIntervalSec));
+  }
+  // final flush
+  g_store.saveToFile(g_cfg.stateFile);
+}
+
 static void renderLoop(ui::Dashboard &dash) {
   // halfdelay(2) trong dashboard làm getch() chờ 0.2s → 5 frame/giây
   // Data snapshot mỗi giây để không lock quá thường xuyên
@@ -139,7 +198,29 @@ static void acceptLoop(int serverFd) {
     }
     char ipBuf[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
-    std::thread(handleClient, fd, std::string(ipBuf)).detach();
+    std::string ip(ipBuf);
+
+    bool reject = false;
+    {
+      std::lock_guard<std::mutex> lk(g_fdMtx);
+      int count = 0;
+      for (const auto &[_, v] : g_fdIP)
+        if (v == ip)
+          count++;
+      if (count >= g_cfg.maxAgentsPerIP)
+        reject = true;
+      else
+        g_fdIP[fd] = ip; // reserve slot immediately
+    }
+
+    if (reject) {
+      std::string msg = "{\"error\":\"ip_limit\",\"detail\":\"max agents per ip reached\"}";
+      net::sendMsg(fd, msg);
+      close(fd);
+      continue;
+    }
+
+    std::thread(handleClient, fd, ip).detach();
   }
 }
 
@@ -197,6 +278,7 @@ int main(int argc, char **argv) {
   uint16_t port = DEFAULT_PORT;
   uint16_t vport = 0; // viewer port (0 = auto = port+1)
   std::string cfgPath = "config/thresholds.conf";
+  std::string serverCfgPath = "config/server.conf";
 
   for (int i = 1; i < argc - 1; i++) {
     std::string arg(argv[i]);
@@ -206,11 +288,21 @@ int main(int argc, char **argv) {
       vport = (uint16_t)std::stoi(argv[i + 1]);
     if (arg == "-config")
       cfgPath = argv[i + 1];
+    if (arg == "-server-config")
+      serverCfgPath = argv[i + 1];
   }
   if (vport == 0)
     vport = port + 1;
 
   g_thresh = loadThresholds(cfgPath);
+  g_cfg = loadServerConfig(serverCfgPath);
+  try {
+    std::filesystem::path p(g_cfg.stateFile);
+    if (p.has_parent_path())
+      std::filesystem::create_directories(p.parent_path());
+  } catch (...) {
+  }
+  g_store.loadFromFile(g_cfg.stateFile); // best-effort restore
 
   signal(SIGPIPE, SIG_IGN);
 
@@ -237,6 +329,9 @@ int main(int argc, char **argv) {
 
   // Start viewer accept thread
   std::thread(viewerAcceptLoop, viewerFd).detach();
+
+  // Start state persistence thread
+  std::thread(persistLoop).detach();
 
   // Render loop (blocks in main thread)
   renderLoop(dash);

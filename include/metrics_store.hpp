@@ -7,7 +7,9 @@
 #include <chrono>
 #include <ctime>
 #include <deque>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -149,6 +151,84 @@ public:
   std::vector<LogEvent> logSnapshot() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return {log_.begin(), log_.end()};
+  }
+
+  // Persist lightweight state for restart recovery.
+  // Format (line based):
+  // HOST|<name>|<ip>|<cpu>|<ram>|<disk>|<lastSeen>|<status>
+  // LOG |<ts>|<host>|<ip>|<type>|<cpu>|<ram>|<disk>|<detail>
+  bool saveToFile(const std::string &path) const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::ofstream out(path, std::ios::trunc);
+    if (!out)
+      return false;
+
+    for (const auto &[name, h] : hosts_) {
+      out << "HOST|" << h.name << "|" << h.ip << "|" << h.cpu << "|" << h.ram
+          << "|" << h.disk << "|" << (long long)h.lastSeen << "|"
+          << (int)h.status << "\n";
+    }
+
+    for (const auto &ev : log_) {
+      out << "LOG|" << (long long)ev.ts << "|" << ev.host << "|" << ev.ip << "|"
+          << (int)ev.type << "|" << ev.cpu << "|" << ev.ram << "|" << ev.disk
+          << "|" << ev.detail << "\n";
+    }
+    return true;
+  }
+
+  bool loadFromFile(const std::string &path) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::ifstream in(path);
+    if (!in)
+      return false;
+
+    hosts_.clear();
+    log_.clear();
+
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.empty())
+        continue;
+
+      std::vector<std::string> cols;
+      std::stringstream ss(line);
+      std::string tok;
+      while (std::getline(ss, tok, '|'))
+        cols.push_back(tok);
+
+      if (cols.size() >= 8 && cols[0] == "HOST") {
+        HostState h;
+        h.name = cols[1];
+        h.ip = cols[2];
+        h.cpu = std::stof(cols[3]);
+        h.ram = std::stof(cols[4]);
+        h.disk = std::stof(cols[5]);
+        h.lastSeen = (time_t)std::stoll(cols[6]);
+        h.status = (HostStatus)std::stoi(cols[7]);
+        h.fd = -1;
+        hosts_[h.name] = h;
+      } else if (cols.size() >= 9 && cols[0] == "LOG") {
+        LogEvent ev;
+        ev.ts = (time_t)std::stoll(cols[1]);
+        ev.host = cols[2];
+        ev.ip = cols[3];
+        ev.type = (LogEventType)std::stoi(cols[4]);
+        ev.cpu = std::stof(cols[5]);
+        ev.ram = std::stof(cols[6]);
+        ev.disk = std::stof(cols[7]);
+        ev.detail = cols[8];
+        log_.push_back(ev);
+      }
+    }
+
+    // On restart, recovered hosts are stale until reconnect.
+    for (auto &[_, h] : hosts_) {
+      if (h.status != HostStatus::OFFLINE)
+        h.status = HostStatus::WARNING;
+    }
+
+    return true;
   }
 
 private:
