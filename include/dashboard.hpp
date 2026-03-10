@@ -717,11 +717,6 @@ private:
       x = 2;
       bool off = (h.status == HostStatus::OFFLINE);
 
-      if (idx == selectedIdx_) {
-        attron(COLOR_PAIR(C_CYAN) | A_BOLD);
-        mvaddstr(ry, 1, ">");
-        attroff(COLOR_PAIR(C_CYAN) | A_BOLD);
-      }
 
       attron(COLOR_PAIR(off ? C_GRAY : C_WHITE_BD) | (off ? A_DIM : A_BOLD));
       mvprintw(ry, x, "%-*s", cHost, trunc(h.name, cHost).c_str());
