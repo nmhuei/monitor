@@ -25,23 +25,30 @@ INTERVAL="${INTERVAL:-$(read_cfg AGENT_INTERVAL_SEC 2)}"
 
 cleanup() {
   echo
-  echo "[demo] stopping agents..."
+  echo "[demo] stopping processes..."
   [[ -n "${AGENT1_PID:-}" ]] && kill "$AGENT1_PID" 2>/dev/null || true
   [[ -n "${AGENT2_PID:-}" ]] && kill "$AGENT2_PID" 2>/dev/null || true
+  [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 echo "[demo] build..."
 ./build.sh >/dev/null
 
+echo "[demo] start monitor_server on :$PORT (viewer:$VPORT)"
+./monitor_server -port "$PORT" -vport "$VPORT" -config config/thresholds.conf -server-config config/server.conf &
+SERVER_PID=$!
+sleep 1
+
 echo "[demo] start agent #1: $AGENT1_NAME"
-./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" -config config/agent.conf &
+./agent -fg -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT1_NAME" -config config/agent.conf &
 AGENT1_PID=$!
 
 echo "[demo] start agent #2: $AGENT2_NAME"
-./agent -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" -config config/agent.conf &
+./agent -fg -server 127.0.0.1:"$PORT" -interval "$INTERVAL" -name "$AGENT2_NAME" -config config/agent.conf &
 AGENT2_PID=$!
 
-echo "[demo] start monitor_server (foreground) on :$PORT"
-echo "[demo] press Ctrl+C to stop all"
-./monitor_server -port "$PORT" -vport "$VPORT" -config config/thresholds.conf -server-config config/server.conf
+echo "[demo] launch viewer_cli (interactive test)"
+echo "[demo] commands: /history <host> <n> | /warning <host> <n> | /clear"
+echo "[demo] press q in viewer to stop demo"
+./viewer_cli -server 127.0.0.1:"$VPORT"
