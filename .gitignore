@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+# Local build/runtime artifacts
+build/
+.cache/
+.logs/
+.pids/
+data/
+
+# Local binaries
+agent
+monitor_server
+viewer_cli

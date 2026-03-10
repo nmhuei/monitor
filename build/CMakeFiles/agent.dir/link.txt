@@ -1,1 +1,0 @@
-/usr/bin/clang++ -g -Xlinker --dependency-file=CMakeFiles/agent.dir/link.d CMakeFiles/agent.dir/src/agent/agent.cpp.o -o /home/light/Project/Test_coding/monitor-system/monitor/agent  -lpthread

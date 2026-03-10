@@ -1,1 +1,0 @@
-/usr/bin/clang++ -g -Xlinker --dependency-file=CMakeFiles/monitor_server.dir/link.d CMakeFiles/monitor_server.dir/src/server/monitor_server.cpp.o -o /home/light/Project/Test_coding/monitor-system/monitor/monitor_server  -lcurses /usr/lib/x86_64-linux-gnu/libform.so -lpthread
