@@ -234,9 +234,6 @@ MAX_CONNECT_RETRIES=12
 
 # Delay between retries
 RECONNECT_INTERVAL_SEC=5
-
-# Shared auth token (must match server AUTH_TOKEN)
-AUTH_TOKEN=
 ```
 
 ### 3) Server runtime policy (`config/server.conf`)
@@ -251,21 +248,13 @@ BACKUP_INTERVAL_SEC=10
 # Agent send interval used by demo scripts
 AGENT_INTERVAL_SEC=2
 
-# Shared auth token (agent must match). Empty => auth disabled
-AUTH_TOKEN=
-
-# Socket receive timeout (seconds) to avoid half-open stuck recv
-SOCKET_RECV_TIMEOUT_SEC=10
-
-# Persisted state file path (validated to stay inside project directory)
+# Persisted state file path
 STATE_FILE=data/monitor_state.db
 ```
 
 What this gives you:
 - monitor server restores state after restart (from `STATE_FILE`)
 - one IP cannot flood server with unlimited agents
-- optional shared-token authentication between agent/server
-- socket timeout protection for half-open clients
 - demo scripts can change agent interval by config only
 
 ---
@@ -285,11 +274,6 @@ JSON payload:
   "cpu": 87.3,
   "ram": 62.1,
   "disk": 45.0,
-  "net_rx_kbps": 120.5,
-  "net_tx_kbps": 33.2,
-  "load1": 0.92,
-  "proc_count": 312,
-  "token": "<optional-shared-token>",
   "timestamp": 1710000000
 }
 ```
@@ -417,3 +401,71 @@ Use `Tab` / `Shift+Tab` to cycle through hosts, `↑↓` to scroll cores, `Esc` 
 │  statvfs("/")     │   │  statvfs("/")         │
 └───────────────────┘   └──────────────────────┘
 ```
+
+---
+
+## Security (v2 — Authentication)
+
+### Agent authentication
+
+Set a shared secret in both configs:
+
+**`config/server.conf`:**
+```ini
+AUTH_TOKEN=your_strong_secret_here
+```
+
+**`config/agent.conf`:**
+```ini
+AUTH_TOKEN=your_strong_secret_here
+```
+
+Or pass `-token <secret>` flag directly to the agent binary.
+
+Agents that send a wrong or missing token are immediately rejected and disconnected.
+
+### What is NOT protected
+
+TLS/encryption is not included (out of scope for LAN tooling). For internet-facing deployments, put the agent port behind a VPN (WireGuard, Tailscale) or an SSH tunnel.
+
+---
+
+## UI Themes
+
+Press **`U`** (or `Ctrl+U`) to cycle between 6 themes:
+
+| # | Name | Style |
+|---|------|-------|
+| 1 | BLOODLINE | Red/toxic green, aggressive |
+| 2 | MOCHA | Catppuccin pastel, soft |
+| 3 | NORD | Arctic blue-grey tones |
+| 4 | DRACULA | Purple + pink |
+| 5 | MATRIX | Classic green-on-black |
+| 6 | CYBERPUNK | Neon yellow + hot pink |
+
+Requires a 256-color terminal (all modern terminals support this).
+
+---
+
+## New Metrics (v2)
+
+- **Load Average** — 1-minute load (shown in host table + detail view)
+- **Process Count** — total process count from `/proc/loadavg`
+- **Network RX/TX** — KB/s received and transmitted per interval (from `/proc/net/dev`, loopback excluded)
+
+All new fields appear in the host table, detail view, and history view.
+
+---
+
+## Changes in v2
+
+| Issue | Fix |
+|-------|-----|
+| No authentication | Pre-shared token in config; agents rejected without it |
+| State file injection | `\|` chars pipe-escaped in all saved fields |
+| Path traversal | State file path validated against working directory |
+| `recvMsg()` blocks forever | `SO_RCVTIMEO` set (30s) on all client sockets |
+| CPU measurement blocks 500ms | `AsyncCpuSampler` background thread — `collect()` is instant |
+| JSON string escaping bugs | Full RFC 8259 escape/unescape for `"`, `\`, `\n`, `\r`, `\t` |
+| Missing metrics | Network I/O, load average, process count added |
+| Viewer port hardcoded `port+1` | `DEFAULT_VPORT=8785` constant; clearly separate from agent port |

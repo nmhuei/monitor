@@ -1,11 +1,8 @@
 /*
  * agent.cpp — metrics collection agent
- *
+ * Fixed: async CPU, auth token, new metrics (net, load, procs), SO_SNDTIMEO.
  * Usage: ./agent -server <host>:<port> -interval <sec> -name <hostname>
- *               [-disk <path>] [-config <path>]
- *
- * Collects CPU, RAM, Disk and sends JSON to the monitor server.
- * Auto-reconnects on disconnect.
+ *               [-disk <path>] [-config <path>] [-token <secret>] [-fg]
  */
 #include "../../include/json_helper.hpp"
 #include "../../include/metrics_collector.hpp"
@@ -33,219 +30,160 @@
 using namespace monitor;
 
 static std::atomic<bool> g_running{true};
-
 static void sigHandler(int) { g_running = false; }
 
 static bool daemonizeAgent() {
-  pid_t pid = fork();
-  if (pid < 0)
-    return false;
-  if (pid > 0)
-    _exit(0); // parent exits
-
-  if (setsid() < 0)
-    return false;
-
-  int devnull = open("/dev/null", O_RDWR);
-  if (devnull >= 0) {
-    dup2(devnull, STDIN_FILENO);
-    dup2(devnull, STDOUT_FILENO);
-    dup2(devnull, STDERR_FILENO);
-    if (devnull > 2)
-      close(devnull);
-  }
+  pid_t pid = fork(); if (pid < 0) return false; if (pid > 0) _exit(0);
+  if (setsid() < 0) return false;
+  int dn = open("/dev/null", O_RDWR);
+  if (dn >= 0) { dup2(dn,0); dup2(dn,1); dup2(dn,2); if(dn>2) close(dn); }
   return true;
 }
 
 static int connectToServer(const std::string &host, uint16_t port) {
   struct addrinfo hints{}, *res = nullptr;
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) !=
-      0)
+  hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+  if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0)
     return -1;
-
   int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if (fd < 0) {
-    freeaddrinfo(res);
-    return -1;
-  }
-
+  if (fd < 0) { freeaddrinfo(res); return -1; }
+  // Send timeout to avoid blocking forever on broken network
+  struct timeval tv{}; tv.tv_sec = 10;
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
-    close(fd);
-    freeaddrinfo(res);
-    return -1;
+    close(fd); freeaddrinfo(res); return -1;
   }
   freeaddrinfo(res);
   return fd;
 }
 
 static std::string trim(const std::string &s) {
-  auto b = s.find_first_not_of(" \t\r\n");
-  auto e = s.find_last_not_of(" \t\r\n");
-  return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+  auto b=s.find_first_not_of(" \t\r\n"), e=s.find_last_not_of(" \t\r\n");
+  return (b==std::string::npos) ? "" : s.substr(b, e-b+1);
 }
 
-static void loadAgentConfig(const std::string &path, int &maxRetries,
-                            int &reconnectSec, std::string &authToken) {
-  std::ifstream in(path);
-  if (!in)
-    return;
+struct AgentConfig {
+  int maxRetries = 0;
+  int reconnectSec = RECONNECT_INTERVAL_SEC;
+  std::string authToken;
+};
+
+static AgentConfig loadAgentConfig(const std::string &path) {
+  AgentConfig cfg;
+  std::ifstream in(path); if (!in) return cfg;
   std::string line;
   while (std::getline(in, line)) {
     line = trim(line);
-    if (line.empty() || line[0] == '#')
-      continue;
-    auto eq = line.find('=');
-    if (eq == std::string::npos)
-      continue;
-    std::string k = trim(line.substr(0, eq));
-    std::string v = trim(line.substr(eq + 1));
+    if (line.empty() || line[0]=='#') continue;
+    auto eq = line.find('='); if (eq==std::string::npos) continue;
+    std::string k=trim(line.substr(0,eq)), v=trim(line.substr(eq+1));
     try {
-      if (k == "MAX_CONNECT_RETRIES")
-        maxRetries = std::max(0, std::stoi(v));
-      else if (k == "RECONNECT_INTERVAL_SEC")
-        reconnectSec = std::max(1, std::stoi(v));
-      else if (k == "AUTH_TOKEN")
-        authToken = v;
-    } catch (...) {
-    }
+      if      (k=="MAX_CONNECT_RETRIES")   cfg.maxRetries   = std::max(0,std::stoi(v));
+      else if (k=="RECONNECT_INTERVAL_SEC") cfg.reconnectSec = std::max(1,std::stoi(v));
+      else if (k=="AUTH_TOKEN")             cfg.authToken    = v;
+    } catch(...) {}
   }
+  return cfg;
 }
 
 int main(int argc, char **argv) {
-  std::string serverHost = "127.0.0.1";
-  uint16_t serverPort = DEFAULT_PORT;
-  int interval = 5;
-  std::string agentName = "agent";
-  std::string diskPath = "/";
-  std::string cfgPath = "config/agent.conf";
-  bool foreground = false;
+  std::string serverHost="127.0.0.1";
+  uint16_t serverPort=DEFAULT_PORT;
+  int interval=5;
+  std::string agentName="agent", diskPath="/", cfgPath="config/agent.conf";
+  std::string tokenOverride;
+  bool foreground=false;
 
-  int maxConnectRetries = 0; // 0 = infinite
-  int reconnectIntervalSec = RECONNECT_INTERVAL_SEC;
-  std::string authToken;
-
-  // Parse arguments
-  for (int i = 1; i < argc; i++) {
+  for (int i=1;i<argc;i++) {
     std::string arg(argv[i]);
-    if (arg == "-server" && i + 1 < argc) {
-      std::string sv(argv[++i]);
-      auto colon = sv.rfind(':');
-      if (colon != std::string::npos) {
-        serverHost = sv.substr(0, colon);
-        serverPort = (uint16_t)std::stoi(sv.substr(colon + 1));
-      } else {
-        serverHost = sv;
-      }
-    } else if (arg == "-interval" && i + 1 < argc) {
-      interval = std::stoi(argv[++i]);
-    } else if (arg == "-name" && i + 1 < argc) {
-      agentName = argv[++i];
-    } else if (arg == "-disk" && i + 1 < argc) {
-      diskPath = argv[++i];
-    } else if (arg == "-config" && i + 1 < argc) {
-      cfgPath = argv[++i];
-    } else if (arg == "-fg" || arg == "--foreground") {
-      foreground = true;
-    }
+    if (arg=="-server"&&i+1<argc) {
+      std::string sv(argv[++i]); auto c=sv.rfind(':');
+      if (c!=std::string::npos) { serverHost=sv.substr(0,c); serverPort=(uint16_t)std::stoi(sv.substr(c+1)); }
+      else serverHost=sv;
+    } else if (arg=="-interval"&&i+1<argc) interval=std::stoi(argv[++i]);
+    else if (arg=="-name"&&i+1<argc)       agentName=argv[++i];
+    else if (arg=="-disk"&&i+1<argc)       diskPath=argv[++i];
+    else if (arg=="-config"&&i+1<argc)     cfgPath=argv[++i];
+    else if (arg=="-token"&&i+1<argc)      tokenOverride=argv[++i];
+    else if (arg=="-fg"||arg=="--foreground") foreground=true;
   }
 
-  loadAgentConfig(cfgPath, maxConnectRetries, reconnectIntervalSec, authToken);
+  auto cfg = loadAgentConfig(cfgPath);
+  if (!tokenOverride.empty()) cfg.authToken = tokenOverride;
 
-  signal(SIGINT, sigHandler);
-  signal(SIGTERM, sigHandler);
-  signal(SIGPIPE, SIG_IGN);
+  signal(SIGINT, sigHandler); signal(SIGTERM, sigHandler); signal(SIGPIPE, SIG_IGN);
 
-  if (!foreground) {
-    if (!daemonizeAgent())
-      return 1;
-  }
+  if (!foreground) { if (!daemonizeAgent()) return 1; }
 
   std::cout << "Agent '" << agentName << "' started\n";
   std::cout << "Server: " << serverHost << ":" << serverPort << "\n";
-  std::cout << "Sending metrics every " << interval << " seconds...\n";
-  std::cout << "Reconnect interval: " << reconnectIntervalSec << "s\n";
-  if (maxConnectRetries == 0)
-    std::cout << "Max connect retries: infinite\n";
-  else
-    std::cout << "Max connect retries: " << maxConnectRetries << "\n";
+  std::cout << "Interval: " << interval << "s | Auth: " << (cfg.authToken.empty()?"none":"***") << "\n";
 
-  int fd = -1;
-  int failedConnectAttempts = 0;
+  // Start async CPU sampler — does not block collect()
+  metrics::AsyncCpuSampler cpuSampler;
+  metrics::NetRaw prevNet = metrics::readNetRaw();
+
+  // Warm up CPU sampler (1 cycle)
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+
+  int fd=-1, failedAttempts=0;
 
   while (g_running) {
-    // Connect / reconnect
     if (fd < 0) {
-      std::cout << "Connecting to " << serverHost << ":" << serverPort
-                << "...\n";
+      std::cout << "Connecting to " << serverHost << ":" << serverPort << "...\n";
       fd = connectToServer(serverHost, serverPort);
       if (fd < 0) {
-        failedConnectAttempts++;
-        std::cout << "Connection failed (attempt " << failedConnectAttempts;
-        if (maxConnectRetries > 0)
-          std::cout << "/" << maxConnectRetries;
-        std::cout << "). Retrying in " << reconnectIntervalSec << "s...\n";
-
-        if (maxConnectRetries > 0 && failedConnectAttempts >= maxConnectRetries) {
-          std::cout << "Max connect retries reached. Agent will stop.\n";
-          break;
+        failedAttempts++;
+        std::cout << "Connection failed (attempt " << failedAttempts;
+        if (cfg.maxRetries>0) std::cout << "/" << cfg.maxRetries;
+        std::cout << "). Retrying in " << cfg.reconnectSec << "s...\n";
+        if (cfg.maxRetries>0 && failedAttempts>=cfg.maxRetries) {
+          std::cout << "Max retries reached. Stopping.\n"; break;
         }
-
-        for (int i = 0; i < reconnectIntervalSec && g_running; i++)
+        for (int i=0;i<cfg.reconnectSec&&g_running;i++)
           std::this_thread::sleep_for(std::chrono::seconds(1));
         continue;
       }
-      failedConnectAttempts = 0;
+      failedAttempts=0;
       std::cout << "Connected.\n";
     }
 
-    // Collect
-    auto sample = metrics::collect(diskPath);
+    // Collect (non-blocking CPU)
+    auto sample = metrics::collectWith(cpuSampler, prevNet, diskPath);
 
-    // Check socket health before sending (catches server-side close)
-    int sockErr = 0;
-    socklen_t errLen = sizeof(sockErr);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen) < 0 ||
-        sockErr != 0) {
-      std::cout << "Connection lost (socket error " << sockErr
-                << "). Reconnecting in " << reconnectIntervalSec << "s...\n";
-      close(fd);
-      fd = -1;
-      for (int i = 0; i < reconnectIntervalSec && g_running; i++)
+    // Check socket health
+    int sockErr=0; socklen_t errLen=sizeof(sockErr);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen)<0 || sockErr!=0) {
+      close(fd); fd=-1;
+      for(int i=0;i<cfg.reconnectSec&&g_running;i++)
         std::this_thread::sleep_for(std::chrono::seconds(1));
       continue;
     }
 
-    // Encode and send (with per-core CPU data)
-    time_t now = time(nullptr);
-    std::string payload = json::encode(agentName, sample.cpu, sample.ram,
-                                       sample.disk, now, sample.cores,
-                                       authToken,
-                                       sample.netRxKBps, sample.netTxKBps,
-                                       sample.load1, sample.procCount);
+    time_t now=time(nullptr);
+    std::string payload=json::encode(agentName, sample.cpu, sample.ram, sample.disk,
+                                     now, sample.cores,
+                                     sample.netRxKB, sample.netTxKB,
+                                     sample.loadAvg, sample.procCount,
+                                     cfg.authToken);
 
     if (!net::sendMsg(fd, payload)) {
-      std::cout << "Send failed — server disconnected. Reconnecting in "
-                << reconnectIntervalSec << "s...\n";
-      close(fd);
-      fd = -1;
-      for (int i = 0; i < reconnectIntervalSec && g_running; i++)
+      std::cout << "Send failed — disconnected.\n";
+      close(fd); fd=-1;
+      for(int i=0;i<cfg.reconnectSec&&g_running;i++)
         std::this_thread::sleep_for(std::chrono::seconds(1));
       continue;
     }
 
     std::cout << "[" << agentName << "] cpu=" << (int)sample.cpu
-              << "% ram=" << (int)sample.ram << "% disk=" << (int)sample.disk
-              << "% cores=" << sample.cores.size() << "\n";
+              << "% ram=" << (int)sample.ram << "% load=" << sample.loadAvg
+              << " net_rx=" << (int)sample.netRxKB << "KB tx=" << (int)sample.netTxKB << "KB\n";
 
-    // Sleep interval (interruptible)
-    for (int i = 0; i < interval && g_running; i++)
+    for (int i=0;i<interval&&g_running;i++)
       std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
-  if (fd >= 0)
-    close(fd);
+  if (fd>=0) close(fd);
   std::cout << "\nAgent stopped.\n";
   return 0;
 }

@@ -6,11 +6,12 @@
 
 namespace monitor {
 
-// Wire protocol: [4-byte length (network order)][JSON payload]
 static constexpr uint16_t DEFAULT_PORT = 8784;
+static constexpr uint16_t DEFAULT_VPORT = 8785;  // explicit viewer port default
 static constexpr int RECONNECT_INTERVAL_SEC = 5;
-static constexpr int MAX_HISTORY = 60; // graph samples
+static constexpr int MAX_HISTORY = 60;
 static constexpr int MAX_LOG_ENTRIES = 500;
+static constexpr int RECV_TIMEOUT_SEC = 30;  // server-side recv timeout
 
 struct MetricPayload {
   std::string host;
@@ -19,26 +20,21 @@ struct MetricPayload {
   float disk = 0.0f;
   time_t timestamp = 0;
   std::string ip;
-  std::vector<float> cores; // per-core CPU %
-  float netRxKBps = 0.0f;
-  float netTxKBps = 0.0f;
-  float load1 = 0.0f;
+  std::vector<float> cores;
+  float netRxKB = 0.0f;
+  float netTxKB = 0.0f;
+  float loadAvg = 0.0f;
   int procCount = 0;
-  std::string token;
 };
 
 enum class HostStatus { ONLINE, WARNING, ALERT, OFFLINE };
 
 inline const char *statusStr(HostStatus s) {
   switch (s) {
-  case HostStatus::ONLINE:
-    return "OK";
-  case HostStatus::WARNING:
-    return "WARN";
-  case HostStatus::ALERT:
-    return "ALERT";
-  case HostStatus::OFFLINE:
-    return "OFFLINE";
+  case HostStatus::ONLINE:  return "OK";
+  case HostStatus::WARNING: return "WARN";
+  case HostStatus::ALERT:   return "ALERT";
+  case HostStatus::OFFLINE: return "OFFLINE";
   }
   return "UNKNOWN";
 }
