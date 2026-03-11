@@ -1,0 +1,35 @@
+[Unit]
+Description=Distributed System Monitor Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=monitor
+WorkingDirectory=/opt/monitor
+ExecStart=/opt/monitor/monitor_server \
+    -port 8784 \
+    -vport 8785 \
+    -config /opt/monitor/config/thresholds.conf \
+    -server-config /opt/monitor/config/server.conf
+Restart=on-failure
+RestartSec=5s
+StandardInput=tty
+TTYPath=/dev/tty1
+StandardOutput=null
+StandardError=journal
+
+# State and log directories
+RuntimeDirectory=monitor
+StateDirectory=monitor
+LogsDirectory=monitor
+
+# Hardening
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/opt/monitor/data
+
+[Install]
+WantedBy=multi-user.target

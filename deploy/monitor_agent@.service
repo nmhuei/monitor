@@ -1,0 +1,25 @@
+[Unit]
+Description=Distributed System Monitor Agent — %I
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# %I = instance name (e.g. 192.168.1.5:8784)
+ExecStart=/opt/monitor/agent \
+    -fg \
+    -server %I \
+    -name %H \
+    -interval 3 \
+    -config /opt/monitor/config/agent.conf
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

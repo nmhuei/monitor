@@ -1,36 +1,47 @@
 # Distributed System Monitor
 
-A production-quality, **btop++-style** distributed monitoring tool written in **C++20**.
-
-Monitors CPU, RAM, and Disk from multiple remote machines in a real-time ncurses terminal dashboard.
+A **btop++-style** distributed monitoring tool written in **C++20** — real-time ncurses dashboard, multi-host, zero external deps beyond ncurses.
 
 ---
 
-## Screenshot
+## Quick Start
+
+```bash
+# 1. Build
+./build.sh
+
+# 2. Start server (opens dashboard in your terminal)
+./monitor_server
+
+# 3. Connect agents (on each machine to monitor)
+./agent -server 127.0.0.1:8784 -name web-1
+
+# 4. (optional) Open interactive viewer from another terminal
+./viewer_cli -server 127.0.0.1:8785
+```
+
+Or run the demo script to open everything at once:
+
+```bash
+./run_demo_terminals.sh              # 2 agents, opens 3 terminals
+./run_demo_terminals.sh --agents 4 --stale 8  # custom
+```
+
+---
+
+## Terminal Size Requirement
+
+**Minimum: 60 × 15** (computed from layout constants). If the terminal is smaller, the dashboard shows a size warning:
 
 ```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  15:32:01     ◈ DISTRIBUTED SYSTEM MONITOR  ◈          [Q] Quit [↑↓] Scroll ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║─ CPU % ──────────────────║─ RAM % ──────────────────║─ DISK % ─────────────║
-║▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇  ║▂▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇█     ║▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄║
-║                   72.4%  ║                   88.1%  ║                45.0% ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ HOST TABLE                                                                   ║
-╠──────────────────────────────────────────────────────────────────────────────║
-║ HOST             CPU               %    RAM               %    DISK      STATUS║
-╠──────────────────────────────────────────────────────────────────────────────║
-║ web-1       ██████████████░░  87%  ████████░░░░░░ 62%  ████░░  45% ● ALERT ║
-║ db-server   ████░░░░░░░░░░░░  23%  ██████████████ 91%  ██████  67% ◐ WARN  ║
-║ worker-1    ██████░░░░░░░░░░  45%  ██████░░░░░░░░ 55%  ███░░░  38% ● OK   ║
-║ redis-1     --- OFFLINE ---                                         OFFLINE  ║
-╠══════════════════ CONNECTION LOG  [↑↓/PgUp/PgDn to scroll] ═════════════════╣
-║ 15:32:01  web-1            192.168.1.10  CONNECT                            ║
-║ 15:32:03  web-1            192.168.1.10  METRIC     CPU: 87% RAM: 62% DSK:45%║
-║ 15:32:05  db-server        192.168.1.11  ALERT      RAM: 91% RAM=91%        ║
-║ 15:32:10  redis-1          192.168.1.13  DISCONNECT                         ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+ Terminal size too small 
+  Width = 52  Height = 12
+
+ Needed for current config:
+  Width = 60  Height = 15
 ```
+
+Recommended: **120 × 35+** for the best layout (all panels, table, and log visible at once).
 
 ---
 
@@ -38,49 +49,38 @@ Monitors CPU, RAM, and Disk from multiple remote machines in a real-time ncurses
 
 ```
 monitor/
-├── agent                          # Compiled agent binary
-├── monitor_server                 # Compiled server binary
-├── viewer_cli                     # Interactive remote viewer binary
-├── build.sh                       # Build script
-├── CMakeLists.txt                 # CMake build definition
+├── monitor_server          # Server binary (runs the ncurses dashboard)
+├── agent                   # Agent binary (deploy on each machine to watch)
+├── viewer_cli              # Interactive remote viewer
+├── build.sh                # Build script
+├── run_demo_terminals.sh   # Demo: opens server + viewer + logs in 3 terminals
 │
 ├── config/
-│   ├── thresholds.conf            # Alert thresholds config
-│   ├── server.conf                # Server behavior (IP limit, state backup, demo interval)
-│   └── agent.conf                 # Agent retry/exit policy
+│   ├── server.conf         # Server: IP limits, state file, stale/offline thresholds
+│   ├── thresholds.conf     # Alert thresholds (global + per-host)
+│   └── agent.conf          # Agent: retry policy, auth token
 │
 ├── include/
-│   ├── protocol.hpp               # Shared constants & types
-│   ├── json_helper.hpp            # Lightweight JSON encoder/decoder
-│   ├── metrics_collector.hpp      # /proc/stat, /proc/meminfo, statvfs()
-│   ├── metrics_store.hpp          # Thread-safe per-host metric store
-│   ├── net_framing.hpp            # TCP message framing [len][payload]
-│   ├── thresholds.hpp             # Config loader (global + per-host)
-│   └── dashboard.hpp              # Full btop++-style ncurses dashboard
+│   ├── protocol.hpp        # Shared types & constants (HostStatus, ports, etc.)
+│   ├── metrics_store.hpp   # Thread-safe metric store; hostsJson/historyJson/logJson
+│   ├── metrics_collector.hpp  # /proc/stat, /proc/meminfo, statvfs, /proc/net/dev
+│   ├── dashboard.hpp       # Full btop++-style ncurses dashboard (6 themes)
+│   ├── net_framing.hpp     # TCP framing: [4-byte len][JSON payload]
+│   ├── json_helper.hpp     # Lightweight JSON encoder/decoder
+│   ├── thresholds.hpp      # Config loader (global + per-host overrides)
+│   └── ansi_viewer.hpp     # ANSI renderer for nc/telnet viewers
 │
 └── src/
-    ├── server/
-    │   └── monitor_server.cpp     # Server: accept, dispatch, render
-    ├── agent/
-    │   └── agent.cpp              # Agent: collect, send, auto-reconnect
-    └── viewer/
-        └── viewer_cli.cpp         # Interactive remote viewer with command bar
+    ├── server/monitor_server.cpp   # Accept loop, stale checker, viewer handler
+    ├── agent/agent.cpp             # Metric collection, auto-reconnect, daemon mode
+    └── viewer/viewer_cli.cpp       # ncurses viewer; CMD query protocol
 ```
 
 ---
 
-## Prerequisites
+## Build
 
-**Server (monitor_server):**
-- Linux (any distro)
-- `libncurses6` (runtime, usually pre-installed)
-- `g++` with C++20 support (GCC 10+)
-
-**Agent:**
-- Linux only (reads `/proc/stat`, `/proc/meminfo`)
-- `g++` with C++20 support
-
-### Install build dependencies
+### Requirements
 
 ```bash
 # Debian / Ubuntu
@@ -93,190 +93,104 @@ sudo dnf install gcc-c++ ncurses-devel
 sudo pacman -S gcc ncurses
 ```
 
----
+Requires **GCC 10+ / Clang 12+** (C++20). Agent runs Linux-only (reads `/proc`). Server can run anywhere with ncurses.
 
-## Build
-
-### Option 1: build.sh (recommended)
+### Build options
 
 ```bash
-chmod +x build.sh
+# Option 1: build script
 ./build.sh
-```
 
-### Option 2: CMake
-
-```bash
+# Option 2: CMake
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-### Option 3: Manual
-
-```bash
-# Agent
-g++ -std=c++20 -O2 -pthread -Iinclude \
-    src/agent/agent.cpp -o agent
-
-# Server
-g++ -std=c++20 -O2 -pthread -Iinclude \
-    src/server/monitor_server.cpp \
-    -o monitor_server -lncurses
-```
-
 ---
 
-## Running
-
-### 1. Start the server
+## Server
 
 ```bash
-./monitor_server
-# or with options:
-./monitor_server -port 8784 -vport 8785 -config config/thresholds.conf
+./monitor_server [options]
 ```
-
-The dashboard will launch immediately in your terminal.
-
-**Server options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-port N` | Agent connection port | `8784` |
-| `-vport N` | Remote viewer port | `port + 1` |
-| `-config path` | Thresholds config file | `config/thresholds.conf` |
+| `-port N` | Agent listen port | `8784` |
+| `-vport N` | Viewer listen port | `8785` |
+| `-config path` | Thresholds config | `config/thresholds.conf` |
 | `-server-config path` | Server runtime config | `config/server.conf` |
 
-### 2. Remote Viewer
+### `config/server.conf`
 
-#### a) Quick viewer (via nc)
+```ini
+MAX_AGENTS_PER_IP=2       # Max concurrent agents per source IP
+BACKUP_INTERVAL_SEC=10    # State save interval
+STATE_FILE=data/monitor_state.db
 
-```bash
-nc server-ip 8785
+STALE_SEC=30              # Seconds without metric → STALE
+OFFLINE_SEC=90            # Seconds without metric → OFFLINE
+
+#AUTH_TOKEN=changeme      # Shared secret (empty = open)
 ```
 
-- Auto-refreshes every 2 seconds
-- Multiple viewers can connect simultaneously
-- Press `Ctrl+C` to disconnect
+> After a restart, hosts are restored as **STALE** (not ONLINE) until they send a new metric.
 
-#### b) Interactive viewer_cli (recommended)
+---
 
-```bash
-./viewer_cli -server <server-ip>:8785
-```
-
-- Bottom line is command input area (type `/` to start command)
-- Upper area is execution/result area
-- Built-in commands:
-  - `/history <host> <n>` → show last `n` matched lines for host
-  - `/warning <host> <n>` → show last `n` warning/alert matches for host
-  - `/clear` → clear command output
-- `q` to quit
-
-### 3. Start agents (on each machine to monitor)
+## Agent
 
 ```bash
-# Monitor localhost
-./agent -server 127.0.0.1:8784 -interval 5 -name web-1
-
-# Monitor a remote machine (copy agent binary there first)
-./agent -server 192.168.1.5:8784 -interval 3 -name db-server
-
-# Specify disk mount point to monitor
-./agent -server 192.168.1.5:8784 -interval 5 -name nas-1 -disk /mnt/data
+./agent [options]
 ```
-
-**Agent options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-server host:port` | Server address | `127.0.0.1:8784` |
-| `-interval N` | Send interval (seconds) | `5` |
-| `-name hostname` | Display name in dashboard | `agent` |
+| `-name hostname` | Display name | hostname |
+| `-interval N` | Send interval (seconds) | `2` |
 | `-disk path` | Disk path to monitor | `/` |
-| `-config path` | Agent config (retry policy) | `config/agent.conf` |
-| `-fg` | Run in foreground (default is background/daemon) | `off` |
+| `-config path` | Agent config | `config/agent.conf` |
+| `-fg` | Run in foreground (default: daemon) | off |
 
----
-
-## Configuration
-
-### 1) Thresholds
-Edit `config/thresholds.conf`:
+### `config/agent.conf`
 
 ```ini
-# Global thresholds (percentage)
-CPU=80
-RAM=90
-DISK=85
-
-# Per-host overrides
-web-1.cpu=85
-web-1.ram=80
-db-server.ram=95
-db-server.disk=90
-```
-
-When a threshold is exceeded:
-- The host row turns **red** in the table
-- The log panel shows an **ALERT** entry with blinking warning
-- The status badge shows `● ALERT`
-
-By default agent now runs hidden (daemon mode). Use `-fg` when you need terminal logs.
-
-### 2) Agent retry policy (`config/agent.conf`)
-
-```ini
-# Number of consecutive failed connect attempts before agent exits
-# 0 = retry forever
-MAX_CONNECT_RETRIES=12
-
-# Delay between retries
+MAX_CONNECT_RETRIES=12    # 0 = retry forever
 RECONNECT_INTERVAL_SEC=5
+#AUTH_TOKEN=changeme
 ```
 
-### 3) Server runtime policy (`config/server.conf`)
+### Metrics collected
 
-```ini
-# Limit concurrent agent connections per source IP
-MAX_AGENTS_PER_IP=2
-
-# Auto-save in-memory state every N seconds
-BACKUP_INTERVAL_SEC=10
-
-# Agent send interval used by demo scripts
-AGENT_INTERVAL_SEC=2
-
-# Persisted state file path
-STATE_FILE=data/monitor_state.db
-```
-
-What this gives you:
-- monitor server restores state after restart (from `STATE_FILE`)
-- one IP cannot flood server with unlimited agents
-- demo scripts can change agent interval by config only
+| Metric | Source |
+|--------|--------|
+| CPU % (total + per-core) | `/proc/stat` (async sampler) |
+| RAM % | `/proc/meminfo` |
+| Disk % | `statvfs()` |
+| Load avg (1m) | `/proc/loadavg` |
+| Process count | `/proc/loadavg` |
+| Net RX/TX KB/s | `/proc/net/dev` (loopback excluded) |
 
 ---
 
-## Network Protocol
+## Viewer CLI
 
-TCP with message framing:
-
-```
-[4-byte big-endian length][JSON payload]
+```bash
+./viewer_cli -server 127.0.0.1:8785
 ```
 
-JSON payload:
-```json
-{
-  "host": "web-1",
-  "cpu": 87.3,
-  "ram": 62.1,
-  "disk": 45.0,
-  "timestamp": 1710000000
-}
-```
+Press `/` to enter a command:
+
+| Command | Description |
+|---------|-------------|
+| `/hosts` | List all hosts with status, CPU, RAM, Disk, Load |
+| `/history <host> [n]` | Last n metric samples (default 30) |
+| `/log [n]` | Last n event log entries (default 50) |
+| `/help` | Show help |
+| `/clear` | Clear output |
+| `q` | Quit |
 
 ---
 
@@ -287,185 +201,121 @@ JSON payload:
 | `Q` | Quit |
 | `Tab` | Enter host detail view / next host |
 | `Shift+Tab` | Previous host |
-| `Esc` / `Backspace` | Return to overview / close |
-| `↑` / `↓` | Scroll log (overview) or cores/history (detail) |
+| `Esc` | Back to overview |
+| `↑` / `↓` | Scroll log or history |
 | `PgUp` / `PgDn` | Scroll fast |
-| `U` / `Ctrl+U` | Toggle UI mode (BLOODLINE / MOCHA) |
+| `U` / `Ctrl+U` | Cycle theme (6 themes) |
 | `/` | Open command bar |
 
-### Commands
-
-Press `/` to open the command bar, then type a command and press `Enter`:
+### Dashboard commands (`/`)
 
 | Command | Action |
 |---------|--------|
-| `/help` | Show help overlay with all keybindings |
-| `/viewer <host>` | Jump directly to host detail view |
-| `/history <host>` | Show scrollable history table for host |
+| `/help` | Help overlay |
+| `/viewer <host>` | Jump to host detail |
+| `/history <host>` | Switch to history view for host |
 
-Theme/UI hotkey:
-- `U` or `Ctrl+U`: toggle UI mode (**BLOODLINE** ↔ **MOCHA**)
-
-> Tip: Commands support partial host name matching (e.g., `/viewer web` matches `web-1`)
+> Partial host name matching supported: `/viewer web` matches `web-1`
 
 ---
 
-## Host Detail View
+## Host Status
 
-Press `Tab` to enter the host detail view. Shows per-core CPU usage, RAM/Disk sparklines, and host info:
+| Symbol | Status | Meaning |
+|--------|--------|---------|
+| `● OK` | ONLINE | Receiving metrics, all below threshold |
+| `◐ WARN` | WARNING | At least one metric near threshold (≥80% of limit) |
+| `● ALERT` | ALERT | At least one metric exceeds threshold |
+| `◌ STALE` | STALE | No metric received for `STALE_SEC` seconds |
+| `○ OFFLINE` | OFFLINE | No metric received for `OFFLINE_SEC` seconds |
 
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  08:15:32     ◈ HOST DETAIL: web-1 ◈           [Tab]Next [Esc]Back [Q]Quit ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║─ CPU OVERVIEW ──────────────────────────────────────────────── 87.3% ─║
-║▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▅▇██▇▆▅▃▂▁               ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ PROCESSORS (6 cores)                                                       ║
-║ core  0  ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  53.2%      ║
-║ core  1  ██████████████████████████████████░░░░░░░░░░░░░░░░░░░  87.1%      ║
-║ core  2  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  26.4%      ║
-║ core  3  ██████████████████████████████████████████████████████  98.5%      ║
-║ core  4  ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  45.0%      ║
-║ core  5  ██████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░  65.3%      ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║─ RAM ─────────────────────────────────────────────────────── 62.1% ───║
-║▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇▇█▃▄▄▅▅▆▇▇▇▇▇▇▇▇▇▇▇▇▇                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║─ DISK ────────────────────────────────────────────────────── 45.0% ───║
-║▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ HOST INFO                                                                  ║
-║ Name: web-1              Status: ● ALERT                                   ║
-║ IP:   192.168.1.10       Cores: 6       Last: 08:15:30                     ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-```
-
-Use `Tab` / `Shift+Tab` to cycle through hosts, `↑↓` to scroll cores, `Esc` to return.
+Hosts are sorted by severity: **ALERT → WARNING → STALE → ONLINE → OFFLINE**.
 
 ---
 
-## Demo Scripts
+## Thresholds
 
-```bash
-# 1 monitor terminal only, 2 agents hidden in background
-./run_demo_terminals.sh
+Edit `config/thresholds.conf`:
 
-# stop hidden agents
-./stop_agents.sh
+```ini
+# Global defaults (%)
+CPU=80
+RAM=90
+DISK=85
 
-# classic local demo (monitor + 2 agents)
-./run_demo.sh
+# Per-host overrides
+web-1.cpu=85
+db-server.ram=95
 ```
 
 ---
 
-## Features
+## UI Themes
 
-- **Real-time graphs** — sparkline-style CPU/RAM/Disk history (last 60 samples) with block characters
-- **Host detail view** — per-core CPU bars, RAM/DISK sparklines, host info (Tab to enter)
-- **Host table** — progress bars, percentage, color-coded status
-- **Connection log** — 500-entry scrollable log of CONNECT / METRIC / ALERT / DISCONNECT events
-- **Alert system** — configurable global and per-host thresholds; red highlighting + blinking
-- **Auto-reconnect with stop policy** — agent retries by policy (`agent.conf`), can auto-exit after N failed attempts
-- **State persistence** — server periodically backups state and restores on restart
-- **Per-IP connection guard** — limit concurrent agents from one source IP (`MAX_AGENTS_PER_IP`)
-- **Thread-safe** — concurrent agent handling with protected shared store
-- **Zero external deps** — only ncurses + POSIX; custom JSON parser included
-- **Color scheme** — green (OK) → yellow (warning) → red (alert) → gray (offline)
+Press `U` to cycle. Requires 256-color terminal.
+
+| # | Name | Style |
+|---|------|-------|
+| 1 | **BLOODLINE** | Crimson + electric cyan, dark hacker |
+| 2 | **MOCHA** | Catppuccin Mocha, warm mauve pastels |
+| 3 | **NORD** | Arctic blues, aurora accents |
+| 4 | **DRACULA** | Deep purple, vivid pink/green/cyan |
+| 5 | **MATRIX** | Monochrome lime green cascade |
+| 6 | **CYBERPUNK** | Neon pink + acid yellow + electric cyan |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   monitor_server                     │
-│                                                     │
-│  ┌──────────────┐    ┌───────────────────────────┐  │
-│  │ Accept Thread │───▶│  handleClient (1 per fd)  │  │
-│  └──────────────┘    │  recvMsg → JSON decode     │  │
-│                       │  MetricsStore::upsert()   │  │
-│  ┌──────────────┐    └───────────────────────────┘  │
-│  │ Render Loop  │◀───  MetricsStore (mutex-guarded)  │
-│  │ (main thread)│      per-host history + log        │
-│  │  ncurses UI  │                                    │
-│  └──────────────┘                                    │
-└─────────────────────────────────────────────────────┘
-           ▲ TCP [len][JSON]
-           │
-┌──────────┴────────┐   ┌──────────────────────┐
-│     agent (web-1) │   │  agent (db-server)    │
-│  /proc/stat       │   │  /proc/stat           │
-│  /proc/meminfo    │   │  /proc/meminfo        │
-│  statvfs("/")     │   │  statvfs("/")         │
-└───────────────────┘   └──────────────────────┘
+┌────────────────────────────────────────────────┐
+│               monitor_server                    │
+│                                                 │
+│  acceptLoop()  ──▶  handleClient()  (1/agent)   │
+│                      JSON decode                │
+│                      MetricsStore::upsert()     │
+│                                                 │
+│  staleCheckerLoop()  (every 5s)                 │
+│    MetricsStore::markStaleOffline()             │
+│                                                 │
+│  persistLoop()  ──▶  saveToFile() (every 10s)  │
+│                                                 │
+│  renderLoop()   ──▶  Dashboard::render()        │
+│                      ncurses (main thread)      │
+│                                                 │
+│  viewerAcceptLoop() ──▶ viewerHandler()         │
+│    CMD hosts / history / log  →  JSON           │
+└────────────────────────────────────────────────┘
+          ▲ TCP [4-byte len][JSON]
+          │
+ ┌────────┴──────────┐   ┌─────────────────────┐
+ │  agent (web-1)    │   │  agent (db-server)   │
+ │  AsyncCpuSampler  │   │  /proc/stat          │
+ │  /proc/meminfo    │   │  /proc/meminfo       │
+ │  statvfs / netdev │   │  statvfs / netdev    │
+ └───────────────────┘   └─────────────────────┘
 ```
 
 ---
 
-## Security (v2 — Authentication)
+## Security
 
-### Agent authentication
+Set a shared secret in both `config/server.conf` and `config/agent.conf`:
 
-Set a shared secret in both configs:
-
-**`config/server.conf`:**
 ```ini
 AUTH_TOKEN=your_strong_secret_here
 ```
 
-**`config/agent.conf`:**
-```ini
-AUTH_TOKEN=your_strong_secret_here
+Agents without the correct token are immediately rejected. For internet-facing deployments, additionally put the port behind a VPN (WireGuard, Tailscale) or SSH tunnel — TLS is not included.
+
+---
+
+## Demo Scripts
+
+```bash
+./run_demo_terminals.sh                        # 2 agents, 3 terminals
+./run_demo_terminals.sh --agents 4             # 4 agents
+./run_demo_terminals.sh --stale 8 --offline 20 # fast stale testing
+./run_demo_terminals.sh --help                 # all options
+./stop_agents.sh                               # kill background agents
 ```
-
-Or pass `-token <secret>` flag directly to the agent binary.
-
-Agents that send a wrong or missing token are immediately rejected and disconnected.
-
-### What is NOT protected
-
-TLS/encryption is not included (out of scope for LAN tooling). For internet-facing deployments, put the agent port behind a VPN (WireGuard, Tailscale) or an SSH tunnel.
-
----
-
-## UI Themes
-
-Press **`U`** (or `Ctrl+U`) to cycle between 6 themes:
-
-| # | Name | Style |
-|---|------|-------|
-| 1 | BLOODLINE | Red/toxic green, aggressive |
-| 2 | MOCHA | Catppuccin pastel, soft |
-| 3 | NORD | Arctic blue-grey tones |
-| 4 | DRACULA | Purple + pink |
-| 5 | MATRIX | Classic green-on-black |
-| 6 | CYBERPUNK | Neon yellow + hot pink |
-
-Requires a 256-color terminal (all modern terminals support this).
-
----
-
-## New Metrics (v2)
-
-- **Load Average** — 1-minute load (shown in host table + detail view)
-- **Process Count** — total process count from `/proc/loadavg`
-- **Network RX/TX** — KB/s received and transmitted per interval (from `/proc/net/dev`, loopback excluded)
-
-All new fields appear in the host table, detail view, and history view.
-
----
-
-## Changes in v2
-
-| Issue | Fix |
-|-------|-----|
-| No authentication | Pre-shared token in config; agents rejected without it |
-| State file injection | `\|` chars pipe-escaped in all saved fields |
-| Path traversal | State file path validated against working directory |
-| `recvMsg()` blocks forever | `SO_RCVTIMEO` set (30s) on all client sockets |
-| CPU measurement blocks 500ms | `AsyncCpuSampler` background thread — `collect()` is instant |
-| JSON string escaping bugs | Full RFC 8259 escape/unescape for `"`, `\`, `\n`, `\r`, `\t` |
-| Missing metrics | Network I/O, load average, process count added |
-| Viewer port hardcoded `port+1` | `DEFAULT_VPORT=8785` constant; clearly separate from agent port |

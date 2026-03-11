@@ -70,6 +70,8 @@ static std::string statusSymbol(HostStatus s) {
     return std::string(ARED) + "● ALERT" + RST;
   case HostStatus::WARNING:
     return std::string(AYEL) + "◐ WARN" + RST;
+  case HostStatus::STALE:
+    return std::string("\033[0;35m") + "◌ STALE" + RST;
   case HostStatus::ONLINE:
     return std::string(AGRN) + "● OK" + RST;
   case HostStatus::OFFLINE:
@@ -158,8 +160,9 @@ inline std::string renderFrame(const std::vector<HostState> &hosts,
   const int barW = 12;
   for (const auto &h : hosts) {
     std::string name = padRight(h.name, 14);
-    if (h.status == HostStatus::OFFLINE) {
-      o << AGRY << DIM << " " << name << "  --- OFFLINE ---" << RST << "\n";
+    if (h.status == HostStatus::OFFLINE || h.status == HostStatus::STALE) {
+      auto stlbl = (h.status == HostStatus::STALE) ? "\033[0;35m◌ STALE" : "○ OFFLINE";
+      o << AGRY << DIM << " " << name << "  --- " << stlbl << " ---" << RST << "\n";
       continue;
     }
 
@@ -185,7 +188,7 @@ inline std::string renderFrame(const std::vector<HostState> &hosts,
 
   // Compact per-core line(s)
   for (const auto &h : hosts) {
-    if (h.status == HostStatus::OFFLINE || h.cores.empty())
+    if (h.status == HostStatus::OFFLINE || h.status == HostStatus::STALE || h.cores.empty())
       continue;
     o << ACYN << " " << padRight(h.name, 12) << RST << AGRY << " cores: " << RST;
     int limit = std::min((int)h.cores.size(), 12);

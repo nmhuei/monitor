@@ -13,8 +13,30 @@ add_compile_options(
     -pthread
 )
 
-# ── Find ncurses ─────────────────────────────────────────────────────────────
-find_package(Curses REQUIRED)
+# ── Find ncurses (try wide-char ncursesw first, fall back to ncurses) ─────────
+find_package(Curses QUIET)
+if(NOT CURSES_FOUND)
+    # Some distros split ncursesw into a separate package
+    find_library(NCURSESW_LIB ncursesw)
+    find_path(NCURSESW_INCLUDE ncursesw/curses.h)
+    if(NCURSESW_LIB AND NCURSESW_INCLUDE)
+        set(CURSES_LIBRARIES ${NCURSESW_LIB})
+        set(CURSES_INCLUDE_DIRS ${NCURSESW_INCLUDE})
+        set(CURSES_FOUND TRUE)
+    else()
+        message(FATAL_ERROR "Could not find ncurses or ncursesw. Install libncurses-dev or libncursesw5-dev.")
+    endif()
+endif()
+
+# Check if ncursesw/curses.h header is available (for wide-char support)
+find_path(NCURSESW_HEADER_DIR ncursesw/curses.h)
+if(NCURSESW_HEADER_DIR)
+    add_compile_definitions(HAVE_NCURSESW)
+message(STATUS "Found ncursesw/curses.h — wide char support enabled")
+else()
+    message(STATUS "Using fallback curses.h")
+endif()
+
 include_directories(${CURSES_INCLUDE_DIRS})
 include_directories(include)
 

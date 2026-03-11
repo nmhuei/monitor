@@ -1,0 +1,83 @@
+CAC DIEM CO THE CAI TIEN TRUC TIEP TREN MONITOR NAY
+
+1. ON DINH LOI
+- sua parse config de khong crash khi du lieu loi
+- validate port, interval, threshold, timeout
+- chuan hoa logic ONLINE / WARNING / ALERT / STALE / OFFLINE
+- khoi phuc state sau restart dung hon, tranh hien host "online gia"
+- sap xep host on dinh, khong nhay thu tu ngau nhien
+
+2. CAI THIEN DU LIEU MONITOR
+- lam ro don vi metric CPU/RAM/Disk/Network
+- sua cach tinh network throughput cho nhat quan
+- them last seen va tuoi du lieu
+- luu history metric that thay vi chi snapshot ngan
+- luu event/status transition de xem lai canh bao
+
+3. NANG CAP VIEWER/DASHBOARD
+- de viewer_cli query du lieu that tu server
+- them lenh xem host detail
+- them lenh xem history theo host
+- them lenh xem log/event gan nhat
+- cai thien mau, ky hieu trang thai, sorting theo muc do loi
+
+4. ALERTING
+- them alert ra webhook
+- them Slack webhook
+- chong spam alert bang cooldown/dedup
+- gui recovery notification khi host tro lai binh thuong
+
+5. LOGGING VA QUAN SAT HE THONG
+- them log level: INFO/WARN/ERROR
+- log ro loi auth, disconnect, reconnect, parse loi
+- ho tro ghi file log va rotate
+- them metric noi bo cho server: so agent online, stale, backlog, dropped message
+
+6. GIAO THUC AGENT-SERVER-VIEWER
+- chuan hoa message format
+- them version cho protocol
+- tach ro metric, heartbeat, auth, command, error
+- response/error code ro rang hon
+- xu ly backward compatibility co ban
+
+7. DO BEN VA AN TOAN RUNTIME
+- bo detached thread neu co the, quan ly vong doi thread sach hon
+- shutdown/join thread dung cach
+- giam race condition khi cap nhat host map / history / alert state
+- kiem soat reconnect va timeout chac hon
+
+8. BAO MAT
+- cai thien auth token hien tai
+- ho tro TLS
+- tach secret khoi config thuong
+- che thong tin nhay cam trong log
+
+9. KHA NANG TRIEN KHAI
+- sua build cho portable hon giua distro Linux
+- them Dockerfile
+- them systemd service cho server va agent
+- them binary release / package cai dat
+
+10. KHA NANG TICH HOP
+- them HTTP API cho hosts, metrics, history, alerts
+- them JSON output chuan may doc duoc
+- them Prometheus/OpenMetrics export
+
+11. TEST VA CI
+- unit test cho parser/config/threshold
+- integration test cho agent-server-viewer
+- test stale/offline/reconnect/restart
+- CI build + test tu dong
+
+12. TAI LIEU VA USABILITY
+- README quickstart ngan, chay duoc ngay
+- sample config cho dev/prod/demo
+- screenshot/gif dashboard
+- mo ta ro tool nay dung tot nhat cho truong hop nao
+
+5 CAI TIEN DANG LAM NHAT NGAY TREN MONITOR NAY
+1. hardening config + tranh crash
+2. stale/offline + restore state chuan
+3. viewer query du lieu that tu server
+4. persistent history + event log
+5. alert webhook/Slack
