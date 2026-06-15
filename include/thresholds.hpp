@@ -17,6 +17,12 @@
 
 namespace monitor {
 
+inline std::string toLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    return s;
+}
+
 struct Thresholds {
     float cpu  = 80.0f;
     float ram  = 90.0f;
@@ -25,24 +31,18 @@ struct Thresholds {
     std::unordered_map<std::string, float> perHost;
 
     float getCPU(const std::string& host) const {
-        auto it = perHost.find(host + ".cpu");
+        auto it = perHost.find(toLower(host) + ".cpu");
         return it != perHost.end() ? it->second : cpu;
     }
     float getRAM(const std::string& host) const {
-        auto it = perHost.find(host + ".ram");
+        auto it = perHost.find(toLower(host) + ".ram");
         return it != perHost.end() ? it->second : ram;
     }
     float getDisk(const std::string& host) const {
-        auto it = perHost.find(host + ".disk");
+        auto it = perHost.find(toLower(host) + ".disk");
         return it != perHost.end() ? it->second : disk;
     }
 };
-
-inline std::string toLower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c){ return std::tolower(c); });
-    return s;
-}
 
 inline Thresholds loadThresholds(const std::string& path) {
     Thresholds t;

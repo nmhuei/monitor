@@ -1,369 +1,368 @@
+#pragma once
 /*
  * dashboard.hpp — btop++-style ncurses dashboard
- * Themes: BLOODLINE | MOCHA | NORD | DRACULA | MATRIX | CYBERPUNK (cycle U)
+ * Completely remade UX/UI with C++20 and ncursesw.
  */
-#pragma once
 #include "metrics_store.hpp"
 #include "thresholds.hpp"
-#include <algorithm>
-#include <clocale>
-#include <cstdio>
-#include <cstring>
-#include <ctime>
+#include "protocol.hpp"
+
 #ifdef HAVE_NCURSESW
 #  include <ncursesw/curses.h>
 #else
 #  include <curses.h>
 #endif
+
+#include <algorithm>
+#include <clocale>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <queue>
+#include <deque>
+#include <sstream>
+#include <iomanip>
+#include <cmath>
 
 namespace monitor::ui {
 
 enum class ViewMode { OVERVIEW, DETAIL, HELP, HISTORY };
+enum class PanelFocus { LIST, LOG, DETAIL };
 
-enum Color {
-  C_NORMAL=1, C_GREEN=2, C_YELLOW=3, C_RED=4, C_GRAY=5,
-  C_HEADER=6, C_BOX=7, C_CYAN=8, C_MAGENTA=9, C_WHITE_BD=10,
-  C_RAIN1=11, C_RAIN2=12, C_RAIN3=13, C_RAIN4=14, C_RAIN5=15, C_RAIN6=16,
-  C_TIME=17, C_OK_DIM=18, C_WARN_ORANGE=19, C_FLEET=20, C_STALE=21,
+// Color pairs index definitions
+enum ColorPair {
+  CP_NORMAL = 1,
+  CP_ACCENT,
+  CP_OK,
+  CP_WARN,
+  CP_ALERT,
+  CP_DIM,
+  CP_HIGHLIGHT,
+  CP_GRAPH_LOW,
+  CP_GRAPH_MID,
+  CP_GRAPH_HIGH,
+  CP_BOX,
+  CP_HEADER,
+  CP_STALE,
+  CP_OFFLINE
 };
 
-// ── Theme names ──────────────────────────────────────────────────────────────
-static const char *THEME_NAMES[] = {
+struct ThemePalette {
+  int bg, fg;           // base background / foreground
+  int accent;           // borders, headers
+  int ok, warn, alert;  // status colors
+  int dim;              // secondary text
+  int highlight;        // selected row
+  int graphLow, graphMid, graphHigh;  // sparkline gradient
+  int stale;
+  int offline;
+};
+
+static constexpr int NUM_THEMES = 6;
+static const char *THEME_NAMES[NUM_THEMES] = {
   "BLOODLINE", "MOCHA", "NORD", "DRACULA", "MATRIX", "CYBERPUNK"
 };
-static constexpr int NUM_THEMES = 6;
 
-static void initColors(int t = 0) {
-  start_color(); use_default_colors();
-  // 8-color fallback — clean and readable
-  init_pair(C_NORMAL,     COLOR_WHITE,  -1);
-  init_pair(C_GREEN,      COLOR_GREEN,  -1);
-  init_pair(C_YELLOW,     COLOR_YELLOW, -1);
-  init_pair(C_RED,        COLOR_RED,    -1);
-  init_pair(C_GRAY,       COLOR_WHITE,  -1);
-  init_pair(C_HEADER,     COLOR_WHITE,  COLOR_BLUE);
-  init_pair(C_BOX,        COLOR_CYAN,   -1);
-  init_pair(C_CYAN,       COLOR_CYAN,   -1);
-  init_pair(C_MAGENTA,    COLOR_MAGENTA,-1);
-  init_pair(C_WHITE_BD,   COLOR_WHITE,  -1);
-  init_pair(C_RAIN1,      COLOR_RED,    -1);
-  init_pair(C_RAIN2,      COLOR_YELLOW, -1);
-  init_pair(C_RAIN3,      COLOR_GREEN,  -1);
-  init_pair(C_RAIN4,      COLOR_CYAN,   -1);
-  init_pair(C_RAIN5,      COLOR_BLUE,   -1);
-  init_pair(C_RAIN6,      COLOR_MAGENTA,-1);
-  init_pair(C_TIME,       COLOR_CYAN,   -1);
-  init_pair(C_OK_DIM,     COLOR_GREEN,  -1);
-  init_pair(C_WARN_ORANGE,COLOR_YELLOW, -1);
-  init_pair(C_FLEET,      COLOR_WHITE,  COLOR_BLUE);
-  init_pair(C_STALE,      COLOR_MAGENTA,-1);
+// 256-color palettes
+static const ThemePalette THEMES[NUM_THEMES] = {
+  // 0: BLOODLINE (Crimson + Electric Cyan)
+  { -1, 231, 160, 46, 208, 196, 241, 160, 46, 208, 196, 141, 244 },
+  // 1: MOCHA (Catppuccin Mocha)
+  { -1, 189, 105, 150, 216, 211, 61, 54, 150, 216, 211, 183, 244 },
+  // 2: NORD (Arctic blues)
+  { -1, 253, 67, 108, 179, 131, 66, 24, 108, 179, 131, 139, 244 },
+  // 3: DRACULA (Deep purple + vivid accents)
+  { -1, 255, 135, 84, 215, 203, 61, 57, 84, 215, 203, 183, 244 },
+  // 4: MATRIX (lime green monochrome)
+  { -1, 82, 28, 46, 40, 196, 28, 22, 46, 40, 196, 58, 244 },
+  // 5: CYBERPUNK (Neon pink + acid yellow + electric cyan)
+  { -1, 231, 198, 51, 228, 201, 238, 91, 51, 228, 201, 141, 244 }
+};
 
-  if (COLORS < 256) return;
+static inline int fallbackColor(int c256) {
+  if (c256 == 231 || c256 == 255 || c256 == 253 || c256 == 189) return COLOR_WHITE;
+  if (c256 == 160 || c256 == 196 || c256 == 131 || c256 == 203 || c256 == 211) return COLOR_RED;
+  if (c256 == 46 || c256 == 150 || c256 == 108 || c256 == 84) return COLOR_GREEN;
+  if (c256 == 208 || c256 == 216 || c256 == 179 || c256 == 215 || c256 == 228 || c256 == 40) return COLOR_YELLOW;
+  if (c256 == 51 || c256 == 117 || c256 == 122 || c256 == 123) return COLOR_CYAN;
+  if (c256 == 105 || c256 == 110 || c256 == 135 || c256 == 201 || c256 == 183 || c256 == 139 || c256 == 91) return COLOR_MAGENTA;
+  return COLOR_WHITE;
+}
 
-  switch (t) {
-  // ── 0 BLOODLINE ──────────────────────────────────────────────────────────
-  // Crimson + Electric Cyan — high contrast dark hacker aesthetic
-  default:
-  case 0:
-    init_pair(C_HEADER,     231,  160);  // pure white on crimson
-    init_pair(C_BOX,        160,   -1);  // crimson border
-    init_pair(C_CYAN,        51,   -1);  // electric cyan accent
-    init_pair(C_MAGENTA,    197,   -1);  // hot crimson accent
-    init_pair(C_WHITE_BD,   231,   -1);  // pure white text
-    init_pair(C_GRAY,       241,   -1);  // readable dark gray
-    init_pair(C_GREEN,       46,   -1);  // electric green (ok)
-    init_pair(C_OK_DIM,      34,   -1);  // mid green
-    init_pair(C_WARN_ORANGE,208,   -1);  // orange
-    init_pair(C_YELLOW,     208,   -1);
-    init_pair(C_RED,        196,   -1);  // pure red alert
-    init_pair(C_TIME,       245,   -1);  // soft gray
-    init_pair(C_FLEET,      231,   88);  // white on dark crimson
-    init_pair(C_RAIN1,       88,   -1);
-    init_pair(C_RAIN2,      124,   -1);
-    init_pair(C_RAIN3,      160,   -1);
-    init_pair(C_RAIN4,      196,   -1);
-    init_pair(C_RAIN5,       46,   -1);
-    init_pair(C_RAIN6,       51,   -1);
-    init_pair(C_STALE,      141,   -1);  // lavender — distinct from red
-    break;
+static inline void initColors(int themeIdx) {
+  if (!has_colors()) return;
+  start_color();
+  use_default_colors();
+  
+  const auto &p = THEMES[themeIdx];
+  auto initPair = [&](int pairId, int fg, int bg) {
+    if (COLORS >= 256) {
+      init_pair(pairId, fg, bg);
+    } else {
+      init_pair(pairId, fallbackColor(fg), bg == -1 ? -1 : fallbackColor(bg));
+    }
+  };
 
-  // ── 1 MOCHA (Catppuccin Mocha) ────────────────────────────────────────────
-  // Accurate Catppuccin Mocha palette — warm mauve + pastel
-  case 1:
-    init_pair(C_HEADER,     183,   54);  // mauve on dark indigo bg
-    init_pair(C_BOX,        105,   -1);  // periwinkle border
-    init_pair(C_CYAN,       122,   -1);  // teal (catppuccin teal)
-    init_pair(C_MAGENTA,    183,   -1);  // mauve accent
-    init_pair(C_WHITE_BD,   189,   -1);  // text (cdd6f4 approx)
-    init_pair(C_GRAY,        61,   -1);  // subtext dim
-    init_pair(C_GREEN,      150,   -1);  // catppuccin green
-    init_pair(C_OK_DIM,     108,   -1);
-    init_pair(C_WARN_ORANGE,216,   -1);  // peach
-    init_pair(C_YELLOW,     216,   -1);
-    init_pair(C_RED,        211,   -1);  // catppuccin red-pink
-    init_pair(C_TIME,       146,   -1);  // subtext1
-    init_pair(C_FLEET,      189,   54);
-    init_pair(C_RAIN1,      105,   -1);
-    init_pair(C_RAIN2,      147,   -1);
-    init_pair(C_RAIN3,      183,   -1);
-    init_pair(C_RAIN4,      216,   -1);
-    init_pair(C_RAIN5,      150,   -1);
-    init_pair(C_RAIN6,      122,   -1);
-    init_pair(C_STALE,      183,   -1);  // mauve
-    break;
+  initPair(CP_NORMAL,     p.fg, p.bg);
+  initPair(CP_ACCENT,     p.accent, p.bg);
+  initPair(CP_OK,         p.ok, p.bg);
+  initPair(CP_WARN,       p.warn, p.bg);
+  initPair(CP_ALERT,      p.alert, p.bg);
+  initPair(CP_DIM,        p.dim, p.bg);
+  initPair(CP_HIGHLIGHT,  p.fg, p.highlight);
+  initPair(CP_GRAPH_LOW,  p.graphLow, p.bg);
+  initPair(CP_GRAPH_MID,  p.graphMid, p.bg);
+  initPair(CP_GRAPH_HIGH, p.graphHigh, p.bg);
+  initPair(CP_BOX,        p.accent, p.bg);
+  initPair(CP_HEADER,     p.fg, p.accent);
+  initPair(CP_STALE,      p.stale, p.bg);
+  initPair(CP_OFFLINE,    p.offline, p.bg);
+}
 
-  // ── 2 NORD ───────────────────────────────────────────────────────────────
-  // Accurate Nord palette: arctic blues + aurora color accents
-  case 2:
-    init_pair(C_HEADER,     195,   24);  // frost white-blue on deep arctic
-    init_pair(C_BOX,         67,   -1);  // slate blue (nord3)
-    init_pair(C_CYAN,       117,   -1);  // sky blue (frost)
-    init_pair(C_MAGENTA,    110,   -1);  // frost blue (nord10)
-    init_pair(C_WHITE_BD,   253,   -1);  // snow storm
-    init_pair(C_GRAY,        66,   -1);  // dark blue-gray
-    init_pair(C_GREEN,      108,   -1);  // aurora green
-    init_pair(C_OK_DIM,      65,   -1);
-    init_pair(C_WARN_ORANGE,179,   -1);  // aurora yellow-orange
-    init_pair(C_YELLOW,     222,   -1);  // aurora yellow
-    init_pair(C_RED,        131,   -1);  // aurora red
-    init_pair(C_TIME,        66,   -1);
-    init_pair(C_FLEET,      195,   24);
-    init_pair(C_RAIN1,       17,   -1);
-    init_pair(C_RAIN2,       24,   -1);
-    init_pair(C_RAIN3,       67,   -1);
-    init_pair(C_RAIN4,      110,   -1);
-    init_pair(C_RAIN5,      117,   -1);
-    init_pair(C_RAIN6,      195,   -1);
-    init_pair(C_STALE,      139,   -1);  // muted aurora purple
-    break;
+// ── Helpers ──────────────────────────────────────────────────────────────────
+inline const char* statusGlyph(HostStatus s) {
+  switch (s) {
+    case HostStatus::ONLINE:   return "●";
+    case HostStatus::WARNING:  return "◐";
+    case HostStatus::ALERT:    return "⬤";
+    case HostStatus::STALE:    return "◌";
+    case HostStatus::OFFLINE:  return "○";
+  }
+  return "?";
+}
 
-  // ── 3 DRACULA ────────────────────────────────────────────────────────────
-  // Accurate Dracula theme: deep purple bg + vivid accents
-  case 3:
-    init_pair(C_HEADER,     255,   57);  // white on deep dracula purple
-    init_pair(C_BOX,        135,   -1);  // medium purple border
-    init_pair(C_CYAN,       123,   -1);  // dracula cyan
-    init_pair(C_MAGENTA,    212,   -1);  // dracula pink
-    init_pair(C_WHITE_BD,   255,   -1);  // foreground white
-    init_pair(C_GRAY,        61,   -1);  // comment color
-    init_pair(C_GREEN,       84,   -1);  // dracula green (bright)
-    init_pair(C_OK_DIM,      77,   -1);
-    init_pair(C_WARN_ORANGE,215,   -1);  // dracula orange
-    init_pair(C_YELLOW,     228,   -1);  // dracula yellow
-    init_pair(C_RED,        203,   -1);  // dracula red
-    init_pair(C_TIME,        61,   -1);
-    init_pair(C_FLEET,      255,   57);
-    init_pair(C_RAIN1,      212,   -1);
-    init_pair(C_RAIN2,      141,   -1);
-    init_pair(C_RAIN3,      123,   -1);
-    init_pair(C_RAIN4,       84,   -1);
-    init_pair(C_RAIN5,      228,   -1);
-    init_pair(C_RAIN6,      203,   -1);
-    init_pair(C_STALE,      183,   -1);  // mauve/purple
-    break;
+inline int statusColorPair(HostStatus s) {
+  switch (s) {
+    case HostStatus::ONLINE:   return CP_OK;
+    case HostStatus::WARNING:  return CP_WARN;
+    case HostStatus::ALERT:    return CP_ALERT;
+    case HostStatus::STALE:    return CP_STALE;
+    case HostStatus::OFFLINE:  return CP_OFFLINE;
+  }
+  return CP_NORMAL;
+}
 
-  // ── 4 MATRIX ─────────────────────────────────────────────────────────────
-  // Classic green cascade — pure monochrome hacker
-  case 4:
-    init_pair(C_HEADER,      82,   22);  // lime on deep forest
-    init_pair(C_BOX,         28,   -1);  // forest green border
-    init_pair(C_CYAN,        82,   -1);  // lime green primary
-    init_pair(C_MAGENTA,     40,   -1);  // medium green accent
-    init_pair(C_WHITE_BD,    82,   -1);  // bright green text
-    init_pair(C_GRAY,        28,   -1);  // dim green
-    init_pair(C_GREEN,       46,   -1);  // pure bright green
-    init_pair(C_OK_DIM,      34,   -1);
-    init_pair(C_WARN_ORANGE, 40,   -1);  // brighter green for warn
-    init_pair(C_YELLOW,     226,   -1);  // acid yellow (critical only)
-    init_pair(C_RED,        196,   -1);  // red — breaks theme intentionally
-    init_pair(C_TIME,        28,   -1);
-    init_pair(C_FLEET,       82,   22);
-    init_pair(C_RAIN1,       22,   -1);
-    init_pair(C_RAIN2,       28,   -1);
-    init_pair(C_RAIN3,       34,   -1);
-    init_pair(C_RAIN4,       40,   -1);
-    init_pair(C_RAIN5,       46,   -1);
-    init_pair(C_RAIN6,       82,   -1);
-    init_pair(C_STALE,       58,   -1);  // dark olive
-    break;
+inline std::string formatAge(time_t lastSeen, HostStatus status) {
+  if (lastSeen == 0) return "never";
+  time_t diff = time(nullptr) - lastSeen;
+  if (diff < 0) diff = 0;
+  if (status == HostStatus::OFFLINE) return "offline";
+  if (status == HostStatus::STALE) return "stale " + std::to_string(diff) + "s";
+  if (diff < 60) return std::to_string(diff) + "s";
+  time_t mins = diff / 60;
+  if (mins < 60) return std::to_string(mins) + "m";
+  time_t hrs = mins / 60;
+  return std::to_string(hrs) + "h";
+}
 
-  // ── 5 CYBERPUNK ──────────────────────────────────────────────────────────
-  // Neon pink + electric cyan + acid yellow — eye-searing max contrast
-  case 5:
-    init_pair(C_HEADER,     228,   91);  // acid yellow on deep magenta
-    init_pair(C_BOX,        198,   -1);  // hot pink/red border
-    init_pair(C_CYAN,        51,   -1);  // electric cyan
-    init_pair(C_MAGENTA,    201,   -1);  // neon pink
-    init_pair(C_WHITE_BD,   231,   -1);  // pure white
-    init_pair(C_GRAY,       238,   -1);  // dark gray
-    init_pair(C_GREEN,      118,   -1);  // chartreuse green
-    init_pair(C_OK_DIM,      77,   -1);
-    init_pair(C_WARN_ORANGE,214,   -1);  // neon orange
-    init_pair(C_YELLOW,     228,   -1);  // acid yellow
-    init_pair(C_RED,        197,   -1);  // hot electric red
-    init_pair(C_TIME,       238,   -1);
-    init_pair(C_FLEET,      228,   91);
-    init_pair(C_RAIN1,      201,   -1);
-    init_pair(C_RAIN2,      198,   -1);
-    init_pair(C_RAIN3,      228,   -1);
-    init_pair(C_RAIN4,       51,   -1);
-    init_pair(C_RAIN5,       45,   -1);
-    init_pair(C_RAIN6,      118,   -1);
-    init_pair(C_STALE,      135,   -1);  // medium violet
-    break;
+inline const char* getBlockGlyph(float pct) {
+  static const char* blocks[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+  int idx = std::clamp(static_cast<int>((pct / 100.f) * 8), 0, 8);
+  return blocks[idx];
+}
+
+inline std::string drawBar(float pct, int width) {
+  int filled = static_cast<int>((pct / 100.f) * width);
+  filled = std::clamp(filled, 0, width);
+  std::string out;
+  for (int i = 0; i < filled; ++i) out += "█";
+  for (int i = filled; i < width; ++i) out += "░";
+  return out;
+}
+
+inline std::string makeBrailleChar(int h1, int h2) {
+  static const int mask_left[] = {0, 0x40, 0x44, 0x46, 0x47};
+  static const int mask_right[] = {0, 0x80, 0x20 | 0x80, 0x10 | 0x20 | 0x80, 0x08 | 0x10 | 0x20 | 0x80};
+  int val = mask_left[std::clamp(h1, 0, 4)] + mask_right[std::clamp(h2, 0, 4)];
+  int cp = 0x2800 + val;
+  std::string utf8;
+  utf8 += static_cast<char>(0xE0 | (cp >> 12));
+  utf8 += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+  utf8 += static_cast<char>(0x80 | (cp & 0x3F));
+  return utf8;
+}
+
+inline void drawBrailleSparkline(int start_y, int start_x, int W, int H,
+                                 const std::vector<float>& values, float thresh) {
+  std::vector<float> data(2 * W, 0.0f);
+  int offset = static_cast<int>(2 * W) - static_cast<int>(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    int target_idx = static_cast<int>(i) + offset;
+    if (target_idx >= 0 && target_idx < 2 * W) {
+      data[target_idx] = values[i];
+    }
+  }
+
+  for (int row_idx = H - 1; row_idx >= 0; --row_idx) {
+    int screen_y = start_y + (H - 1 - row_idx);
+    move(screen_y, start_x);
+    for (int char_x = 0; char_x < W; ++char_x) {
+      int col1 = 2 * char_x;
+      int col2 = 2 * char_x + 1;
+      
+      float v1 = data[col1];
+      float v2 = data[col2];
+      
+      int height1 = std::clamp(static_cast<int>((v1 / 100.f) * (4 * H)), 0, 4 * H);
+      int height2 = std::clamp(static_cast<int>((v2 / 100.f) * (4 * H)), 0, 4 * H);
+      
+      int h1 = std::clamp(height1 - 4 * row_idx, 0, 4);
+      int h2 = std::clamp(height2 - 4 * row_idx, 0, 4);
+      
+      float avg = (v1 + v2) / 2.0f;
+      int cp = CP_GRAPH_LOW;
+      if (avg >= thresh) cp = CP_GRAPH_HIGH;
+      else if (avg >= thresh * 0.8f) cp = CP_GRAPH_MID;
+      
+      attron(COLOR_PAIR(cp));
+      if (h1 > 0 || h2 > 0) {
+        addstr(makeBrailleChar(h1, h2).c_str());
+      } else {
+        addch(' ');
+      }
+      attroff(COLOR_PAIR(cp));
+    }
   }
 }
 
-// ── Minimum terminal dimensions (derived from layout constants) ───────────────
-//
-// ROW breakdown (from calcOverviewLayout):
-//   0          top frame border
-//   1          header bar
-//   graphY_(2) graph section separator
-//   3..6       graph content (graphH_=4 rows)
-//   7          table section separator  (graphY_+1+graphH_)
-//   8          table header row
-//   9          table header underline separator
-//   10         min 1 data row           (tableH_min=3 → header+sep+1row)
-//   11         log section separator    (tableY_+1+tableH_min)
-//   12..13     log content min 2 rows
-//   14         bottom frame border
-//
-static constexpr int LAYOUT_GRAPH_Y     = 2;  // graphY_ in calcOverviewLayout
-static constexpr int LAYOUT_GRAPH_H     = 4;  // graphH_ in calcOverviewLayout
-static constexpr int LAYOUT_TABLE_H_MIN = 3;  // header(1) + sep(1) + 1 data row
-static constexpr int LAYOUT_LOG_H_MIN   = 2;  // minimum visible log rows
+inline void drawBlockSparkline(int start_y, int start_x, int W, int H,
+                               const std::vector<float>& values, float thresh) {
+  std::vector<float> data(W, 0.0f);
+  int offset = W - static_cast<int>(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    int target_idx = static_cast<int>(i) + offset;
+    if (target_idx >= 0 && target_idx < W) {
+      data[target_idx] = values[i];
+    }
+  }
 
-static constexpr int MIN_ROWS =
-    1                           // top frame border
-  + 1                           // header bar (row 1)
-  + 1 + LAYOUT_GRAPH_H          // graph sep + graph content
-  + 1 + LAYOUT_TABLE_H_MIN      // table sep + table (hdr+undersep+1data)
-  + 1 + LAYOUT_LOG_H_MIN        // log sep + min log rows
-  + 1;                          // bottom frame border
-// = 1+1+1+4+1+3+1+2+1 = 15
+  static const char* blocks[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 
-// COL breakdown (from renderTable):
-//   innerW = cols-2 (left/right frame borders)
-//   cHost_min = 6   (min(16, innerW/6), but cBar formula needs innerW/6 >= 6 → innerW>=36)
-//   cBar_min  = 6   (clamped floor in renderTable)
-//   cPct      = 5   (fixed)
-//   cStatus   = 8   (fixed)
-//   3 metric cols, each: 1(gap) + cBar_min + cPct
-//   Plus load col (~6), gap(1), right edge
-//   innerW_min = cHost_min + 1 + (cBar_min+cPct+1)*3 + 6 + 1 + cStatus
-//
-static constexpr int LAYOUT_CHOST_MIN = 6;
-static constexpr int LAYOUT_CBAR_MIN  = 6;
-static constexpr int LAYOUT_CPCT      = 5;
-static constexpr int LAYOUT_CSTATUS   = 8;
-static constexpr int LAYOUT_CLOAD     = 6;  // load avg display width
-
-static constexpr int MIN_COLS =
-    2                                        // frame borders (left + right)
-  + LAYOUT_CHOST_MIN + 1                     // host col + gap
-  + (LAYOUT_CBAR_MIN + LAYOUT_CPCT + 1) * 3 // 3× metric (bar+pct+gap)
-  + LAYOUT_CLOAD + 1                         // load avg + gap
-  + LAYOUT_CSTATUS;                          // status col
-// = 2 + 7 + 36 + 7 + 8 = 60
-
-static std::string fmtTime(time_t t) {
-  char buf[16]; struct tm *tm_=localtime(&t);
-  strftime(buf, sizeof(buf), "%H:%M:%S", tm_); return buf;
-}
-static std::string trunc(const std::string &s, int w) {
-  if (w<=0) return "";
-  if ((int)s.size()<=w) { std::string r=s; while((int)r.size()<w) r+=' '; return r; }
-  return s.substr(0,w);
-}
-static int pctColor(float pct, const std::string &host, const Thresholds &th, char metric) {
-  float alTh = metric=='c' ? th.getCPU(host) : metric=='r' ? th.getRAM(host) : th.getDisk(host);
-  if (pct >= alTh)           return C_RED;
-  if (pct >= alTh * 0.80f)   return C_WARN_ORANGE;
-  return C_OK_DIM;
+  for (int row_idx = H - 1; row_idx >= 0; --row_idx) {
+    int screen_y = start_y + (H - 1 - row_idx);
+    move(screen_y, start_x);
+    for (int char_x = 0; char_x < W; ++char_x) {
+      float v = data[char_x];
+      int total_levels = H * 8;
+      int height = std::clamp(static_cast<int>((v / 100.f) * total_levels), 0, total_levels);
+      int h = std::clamp(height - 8 * row_idx, 0, 8);
+      
+      int cp = CP_GRAPH_LOW;
+      if (v >= thresh) cp = CP_GRAPH_HIGH;
+      else if (v >= thresh * 0.8f) cp = CP_GRAPH_MID;
+      
+      attron(COLOR_PAIR(cp));
+      addstr(blocks[h]);
+      attroff(COLOR_PAIR(cp));
+    }
+  }
 }
 
-static const char *SPARK_CHARS[]={"▁","▂","▃","▄","▅","▆","▇","█"};
-static const char *BLOCK_FULL="█", *BLOCK_EMPTY="░";
-static const char *BOX_TL="╔",*BOX_TR="╗",*BOX_BL="╚",*BOX_BR="╝";
-static const char *BOX_H="═",*BOX_V="║",*BOX_LT="╠",*BOX_RT="╣";
-static const char *SYM_ONLINE="●",*SYM_WARN="◐",*SYM_DIAMOND="◈",*LINE_H="─";
+inline void drawSparkline(int start_y, int start_x, int W, int H,
+                          const std::vector<float>& values, float thresh) {
+#ifdef HAVE_NCURSESW
+  drawBrailleSparkline(start_y, start_x, W, H, values, thresh);
+#else
+  drawBlockSparkline(start_y, start_x, W, H, values, thresh);
+#endif
+}
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
+inline void drawPanelBox(int y, int x, int w, int h, const std::string &title, bool focused) {
+  static const char *TL = "┌";
+  static const char *TR = "┐";
+  static const char *BL = "└";
+  static const char *BR = "┘";
+  static const char *H  = "─";
+  static const char *V  = "│";
+
+  int cp = focused ? CP_ACCENT : CP_DIM;
+  attron(COLOR_PAIR(cp));
+  if (focused) attron(A_BOLD);
+
+  mvaddstr(y, x, TL);
+  mvaddstr(y, x + w - 1, TR);
+  mvaddstr(y + h - 1, x, BL);
+  mvaddstr(y + h - 1, x + w - 1, BR);
+
+  for (int col = x + 1; col < x + w - 1; ++col) {
+    mvaddstr(y, col, H);
+    mvaddstr(y + h - 1, col, H);
+  }
+
+  for (int row = y + 1; row < y + h - 1; ++row) {
+    mvaddstr(row, x, V);
+    mvaddstr(row, x + w - 1, V);
+  }
+
+  if (!title.empty()) {
+    std::string formatted = " " + title + " ";
+    if (static_cast<int>(formatted.size()) < w - 4) {
+      mvaddstr(y, x + 2, formatted.c_str());
+    }
+  }
+
+  if (focused) attroff(A_BOLD);
+  attroff(COLOR_PAIR(cp));
+}
+
+inline std::string padRight(const std::string &s, size_t n) {
+  if (s.size() >= n) return s.substr(0, n);
+  return s + std::string(n - s.size(), ' ');
+}
+
+inline std::string padLeft(const std::string &s, size_t n) {
+  if (s.size() >= n) return s.substr(0, n);
+  return std::string(n - s.size(), ' ') + s;
+}
+
+inline std::string formatNet(float kb) {
+  if (kb < 0.1f) return "0B";
+  if (kb < 1024.f) {
+    char b[16];
+    snprintf(b, sizeof(b), "%.0fK", kb);
+    return b;
+  }
+  char b[16];
+  snprintf(b, sizeof(b), "%.1fM", kb / 1024.f);
+  return b;
+}
+
+inline std::string formatUptime(time_t seconds) {
+  if (seconds < 60) return std::to_string(seconds) + "s";
+  time_t mins = seconds / 60;
+  time_t secs = seconds % 60;
+  if (mins < 60) return std::to_string(mins) + "m " + std::to_string(secs) + "s";
+  time_t hrs = mins / 60;
+  mins = mins % 60;
+  return std::to_string(hrs) + "h " + std::to_string(mins) + "m";
+}
+
+// ── Dashboard Class ──────────────────────────────────────────────────────────
 class Dashboard {
 public:
-  Dashboard() = default;
-  ~Dashboard() { teardown(); }
+  Dashboard() : uiMode_(0), logScroll_(0), histScroll_(0), selectedIdx_(0),
+                listScroll_(0), viewMode_(ViewMode::OVERVIEW), focus_(PanelFocus::LIST),
+                cmdActive_(false), cmdErrorTimer_(0), startTime_(time(nullptr)) {}
 
-  void init() {
-    setlocale(LC_ALL,"");
-    initscr(); noecho(); cbreak(); curs_set(0);
-    keypad(stdscr, TRUE); halfdelay(2);
-    initColors(uiMode_);
-    getmaxyx(stdscr, rows_, cols_);
+  ~Dashboard() {
+    teardown();
   }
 
-  void teardown() { if (!isendwin()) endwin(); }
+  void init() {
+    setlocale(LC_ALL, "");
+    initscr(); noecho(); cbreak(); curs_set(0);
+    keypad(stdscr, TRUE);
+    nodelay(stdscr, TRUE);
+    initColors(uiMode_);
+    getmaxyx(stdscr, rows_, cols_);
+    startTime_ = time(nullptr);
+  }
 
-  // ── Too-small screen ───────────────────────────────────────────────────────
-  void renderTooSmall() {
-    erase();
-    int r, c; getmaxyx(stdscr, r, c);
-
-    // Draw a simple box if even that fits
-    if (r >= 6 && c >= 36) {
-      attron(COLOR_PAIR(C_BOX)|A_BOLD);
-      mvaddstr(0,0,BOX_TL); for(int i=1;i<c-1;i++) addstr(BOX_H); addstr(BOX_TR);
-      mvaddstr(r-1,0,BOX_BL); for(int i=1;i<c-1;i++) addstr(BOX_H); addstr(BOX_BR);
-      for(int i=1;i<r-1;i++){ mvaddstr(i,0,BOX_V); mvaddstr(i,c-1,BOX_V); }
-      attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    }
-
-    int my = r/2 - 2, mx;
-    if (my < 1) my = 0;
-
-    // Line 1: warning title
-    {
-      const char *title = " Terminal size too small ";
-      mx = (c - (int)strlen(title)) / 2; if(mx<1) mx=1;
-      attron(COLOR_PAIR(C_RED)|A_BOLD);
-      mvaddstr(my, mx, title);
-      attroff(COLOR_PAIR(C_RED)|A_BOLD);
-    }
-    my++;
-
-    // Line 2: current size
-    if (my < r-1) {
-      char cur[48]; snprintf(cur, sizeof(cur), " Width = %d  Height = %d ", c, r);
-      mx = (c - (int)strlen(cur)) / 2; if(mx<1) mx=1;
-      attron(COLOR_PAIR(C_YELLOW)|A_BOLD);
-      mvaddstr(my, mx, cur);
-      attroff(COLOR_PAIR(C_YELLOW)|A_BOLD);
-    }
-    my += 2;
-
-    // Line 3: required size header
-    if (my < r-1) {
-      const char *need = " Needed for current config: ";
-      mx = (c - (int)strlen(need)) / 2; if(mx<1) mx=1;
-      attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-      mvaddstr(my, mx, need);
-      attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-    }
-    my++;
-
-    // Line 4: required dimensions
-    if (my < r-1) {
-      char req[48]; snprintf(req, sizeof(req), " Width = %d  Height = %d ", MIN_COLS, MIN_ROWS);
-      mx = (c - (int)strlen(req)) / 2; if(mx<1) mx=1;
-      attron(COLOR_PAIR(C_GREEN)|A_BOLD);
-      mvaddstr(my, mx, req);
-      attroff(COLOR_PAIR(C_GREEN)|A_BOLD);
-    }
-
-    refresh();
+  void teardown() {
+    if (!isendwin()) endwin();
   }
 
   void render(const std::vector<HostState> &hosts,
@@ -371,748 +370,816 @@ public:
               const Thresholds &thresh) {
     getmaxyx(stdscr, rows_, cols_);
 
-    // Guard: terminal too small
-    if (rows_ < MIN_ROWS || cols_ < MIN_COLS) {
-      // Still handle key input so the user can quit
-      int ch = getch(); if(ch=='q'||ch=='Q') { teardown(); exit(0); }
+    // Guard: Terminal too small
+    if (rows_ < 24 || cols_ < 80) {
+      int ch = getch();
+      if (ch == 'q' || ch == 'Q') {
+        teardown();
+        exit(0);
+      }
+      if (ch == KEY_RESIZE) {
+        endwin(); refresh();
+        getmaxyx(stdscr, rows_, cols_);
+        clear();
+      }
       renderTooSmall();
       return;
     }
 
-    sortedHosts_ = hosts;
-    // Sort: ALERT < WARNING < STALE < ONLINE < OFFLINE (enum order) then by name
-    std::stable_sort(sortedHosts_.begin(), sortedHosts_.end(),
-              [](const HostState &a, const HostState &b){
-                if (a.status != b.status)
-                  return (int)a.status < (int)b.status;
-                return a.name < b.name;
-              });
+    // Populate first seen timestamps
+    for (const auto &h : hosts) {
+      if (firstSeen_.find(h.name) == firstSeen_.end()) {
+        firstSeen_[h.name] = time(nullptr);
+      }
+    }
 
-    int ch = getch();
-    handleKey(ch, log);
+    // Copy and stable sort
+    sortedHosts_ = hosts;
+    std::stable_sort(sortedHosts_.begin(), sortedHosts_.end(),
+                     [](const HostState &a, const HostState &b) {
+                       if (a.status != b.status)
+                         return (int)a.status < (int)b.status;
+                       return a.name < b.name;
+                     });
+
+    // Draining all pending input
+    int ch;
+    while ((ch = getch()) != ERR) {
+      handleKey(ch, log);
+    }
+
+    // Process errors timers
+    if (cmdErrorTimer_ > 0) {
+      cmdErrorTimer_--;
+    }
+
+    // Dynamic layout coordinates
+    int headerHeight = 1;
+    int statusBarHeight = 1;
+    
+    int logHeight = 0;
+    int logY = 0;
+    if (rows_ >= 30) {
+      logHeight = static_cast<int>(rows_ * 0.20);
+      logY = rows_ - 1 - logHeight;
+    }
+    
+    int contentHeight = (logHeight > 0) ? (logY - headerHeight) : (rows_ - headerHeight - statusBarHeight);
+    int contentY = headerHeight;
+    
+    int listWidth = cols_;
+    int detailWidth = 0;
+    int detailX = 0;
+    if (cols_ >= 100) {
+      listWidth = static_cast<int>(cols_ * 0.35);
+      detailWidth = cols_ - listWidth;
+      detailX = listWidth;
+    }
 
     erase();
-    switch (viewMode_) {
-    case ViewMode::OVERVIEW:
-      renderOverview(log, thresh);
-      if (cmdActive_)        renderCmdBar();
-      else if (cmdErrorTimer_>0) { renderCmdError(); cmdErrorTimer_--; }
-      break;
-    case ViewMode::DETAIL:  renderDetailView(thresh); break;
-    case ViewMode::HELP:    renderHelp(); break;
-    case ViewMode::HISTORY: renderHistoryView(); break;
+    
+    // Draw Header
+    drawHeader();
+
+    // Draw Panels
+    drawHostList(contentY, 0, listWidth, contentHeight, thresh);
+    if (detailWidth > 0) {
+      drawDetailPanel(contentY, detailX, detailWidth, contentHeight, thresh);
     }
+    if (logHeight > 0) {
+      drawLogPanel(logY, 0, cols_, logHeight, thresh, log);
+    }
+
+    // Draw Status Bar
+    drawStatusBar(rows_ - 1, cols_);
+
     refresh();
   }
 
 private:
-  // ── State ──────────────────────────────────────────────────────────────────
-  int rows_=24, cols_=80;
-  int uiMode_=0;
-  ViewMode viewMode_=ViewMode::OVERVIEW, prevMode_=ViewMode::OVERVIEW;
-  std::vector<HostState> sortedHosts_;
-  int selectedIdx_=0, logScroll_=0, histScroll_=0;
-  std::string historyHost_;
-  bool cmdActive_=false;
-  std::string cmdBuf_, cmdError_;
-  int cmdErrorTimer_=0;
-  int hdrY_,graphY_,graphH_,tableY_,tableH_,logY_,logH_;
+  void renderTooSmall() {
+    erase();
+    int r = rows_, c = cols_;
+    if (r >= 6 && c >= 36) {
+      attron(COLOR_PAIR(CP_BOX)|A_BOLD);
+      mvaddstr(0, 0, "┌"); for (int i = 1; i < c - 1; i++) addstr("─"); addstr("┐");
+      mvaddstr(r - 1, 0, "└"); for (int i = 1; i < c - 1; i++) addstr("─"); addstr("┘");
+      for (int i = 1; i < r - 1; i++) { mvaddstr(i, 0, "│"); mvaddstr(i, c - 1, "│"); }
+      attroff(COLOR_PAIR(CP_BOX)|A_BOLD);
+    }
 
-  // ── Key handling ──────────────────────────────────────────────────────────
-  void handleKey(int ch, const std::vector<LogEvent> &log) {
-    (void)log; // log not used directly in key handler
-    if (cmdActive_) { handleCmdKey(ch); return; }
-    switch (ch) {
-    case 'q': case 'Q': teardown(); exit(0);
-    case 'u': case 'U': case 21: // Ctrl+U
-      uiMode_ = (uiMode_ + 1) % NUM_THEMES;
-      initColors(uiMode_); break;
-    case '/':
-      if (viewMode_==ViewMode::OVERVIEW) { cmdActive_=true; cmdBuf_.clear(); }
-      break;
-    case 9: // Tab
-      if (viewMode_==ViewMode::OVERVIEW) {
-        if (!sortedHosts_.empty()) { selectedIdx_=0; histScroll_=0; viewMode_=ViewMode::DETAIL; }
-      } else if (viewMode_==ViewMode::DETAIL) {
-        selectedIdx_=(selectedIdx_+1)%(int)sortedHosts_.size(); histScroll_=0;
+    int my = r / 2 - 2;
+    if (my < 1) my = 0;
+
+    attron(COLOR_PAIR(CP_ALERT)|A_BOLD);
+    std::string warn = " Terminal size too small ";
+    mvaddstr(my, (c - static_cast<int>(warn.size())) / 2, warn.c_str());
+    attroff(COLOR_PAIR(CP_ALERT)|A_BOLD);
+
+    attron(COLOR_PAIR(CP_NORMAL));
+    std::string size_cur = "Current: Width=" + std::to_string(c) + " Height=" + std::to_string(r);
+    std::string size_req = "Needed : Width=80  Height=24";
+    mvaddstr(my + 2, (c - static_cast<int>(size_cur.size())) / 2, size_cur.c_str());
+    mvaddstr(my + 3, (c - static_cast<int>(size_req.size())) / 2, size_req.c_str());
+    attroff(COLOR_PAIR(CP_NORMAL));
+    refresh();
+  }
+
+  void drawHeader() {
+    int onlineCount = 0, staleCount = 0, offlineCount = 0;
+    for (const auto &h : sortedHosts_) {
+      if (h.status == HostStatus::ONLINE || h.status == HostStatus::WARNING || h.status == HostStatus::ALERT)
+        onlineCount++;
+      else if (h.status == HostStatus::STALE)
+        staleCount++;
+      else if (h.status == HostStatus::OFFLINE)
+        offlineCount++;
+    }
+
+    time_t now = time(nullptr);
+    struct tm *tm_ = localtime(&now);
+    char tbuf[32];
+    strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm_);
+
+    std::string uptimeStr = "Uptime: " + formatUptime(time(nullptr) - startTime_);
+    std::string statusStr = "ONLINE:" + std::to_string(onlineCount) +
+                            " STALE:" + std::to_string(staleCount) +
+                            " OFFLINE:" + std::to_string(offlineCount);
+    std::string themeStr = "Theme: " + std::string(THEME_NAMES[uiMode_]);
+
+    attron(COLOR_PAIR(CP_HEADER)|A_BOLD);
+    mvhline(0, 0, ' ', cols_);
+    mvprintw(0, 1, "◈ DISTRIBUTED MONITOR ◈  %s", uptimeStr.c_str());
+    
+    int statsX = cols_ / 2 - static_cast<int>(statusStr.size()) / 2;
+    mvaddstr(0, statsX, statusStr.c_str());
+    
+    int rightX = cols_ - 1 - static_cast<int>(themeStr.size()) - static_cast<int>(strlen(tbuf)) - 2;
+    if (rightX > statsX + static_cast<int>(statusStr.size())) {
+      mvprintw(0, rightX, "%s  %s", themeStr.c_str(), tbuf);
+    } else {
+      mvprintw(0, cols_ - 1 - static_cast<int>(strlen(tbuf)), "%s", tbuf);
+    }
+    attroff(COLOR_PAIR(CP_HEADER)|A_BOLD);
+  }
+
+  void drawHostList(int y, int x, int w, int h, const Thresholds &thresh) {
+    std::string title = "HOSTS (" + std::to_string(sortedHosts_.size()) + ")";
+    drawPanelBox(y, x, w, h, title, focus_ == PanelFocus::LIST);
+    
+    int max_visible = h - 2;
+    int hostCount = static_cast<int>(sortedHosts_.size());
+    if (selectedIdx_ >= hostCount) selectedIdx_ = std::max(0, hostCount - 1);
+    
+    if (selectedIdx_ < listScroll_) {
+      listScroll_ = selectedIdx_;
+    } else if (selectedIdx_ >= listScroll_ + max_visible) {
+      listScroll_ = selectedIdx_ - max_visible + 1;
+    }
+    
+    int internalY = y + 1;
+    for (int i = listScroll_; i < listScroll_ + max_visible && i < hostCount; ++i) {
+      const auto &h_state = sortedHosts_[i];
+      bool isSelected = (i == selectedIdx_);
+      int rowAttr = COLOR_PAIR(CP_NORMAL);
+      if (isSelected) {
+        rowAttr = COLOR_PAIR(CP_HIGHLIGHT) | (focus_ == PanelFocus::LIST ? A_BOLD : A_NORMAL);
       }
-      break;
-    case KEY_BTAB:
-      if (viewMode_==ViewMode::DETAIL) {
-        selectedIdx_=(selectedIdx_+sortedHosts_.size()-1)%(int)sortedHosts_.size(); histScroll_=0;
+      
+      attron(rowAttr);
+      mvhline(internalY, x + 1, ' ', w - 2);
+      
+      // Status icon
+      int sCol = statusColorPair(h_state.status);
+      if (isSelected) sCol = CP_HIGHLIGHT;
+      attron(COLOR_PAIR(sCol));
+      mvaddstr(internalY, x + 2, statusGlyph(h_state.status));
+      attroff(COLOR_PAIR(sCol));
+      
+      // Name
+      std::string name = h_state.name;
+      int nameLimit = w - 30;
+      if (nameLimit < 6) nameLimit = 6;
+      if (static_cast<int>(name.size()) > nameLimit) {
+        name = name.substr(0, nameLimit - 1) + "…";
       }
-      break;
-    case 27: case KEY_BACKSPACE: case 127:
-      if (viewMode_!=ViewMode::OVERVIEW) { viewMode_=ViewMode::OVERVIEW; histScroll_=0; }
-      break;
-    case KEY_UP:   case 'k': logScroll_++; histScroll_++; break;
-    case KEY_DOWN: case 'j': logScroll_=std::max(0,logScroll_-1); histScroll_=std::max(0,histScroll_-1); break;
-    case KEY_PPAGE: logScroll_+=10; histScroll_+=10; break;
-    case KEY_NPAGE: logScroll_=std::max(0,logScroll_-10); histScroll_=std::max(0,histScroll_-10); break;
+      mvaddstr(internalY, x + 4, padRight(name, nameLimit).c_str());
+      
+      // CPU/RAM/Disk compact bars
+      std::string compactBars = std::string("[") + 
+                                getBlockGlyph(h_state.cpu) + 
+                                getBlockGlyph(h_state.ram) + 
+                                getBlockGlyph(h_state.disk) + "]";
+      mvaddstr(internalY, x + 4 + nameLimit + 1, compactBars.c_str());
+      
+      // Net RX/TX
+      std::string netStr = "↓" + formatNet(h_state.netRxKB) + " ↑" + formatNet(h_state.netTxKB);
+      mvaddstr(internalY, x + 4 + nameLimit + 7, padRight(netStr, 12).c_str());
+      
+      // Time since last seen
+      std::string ageStr = formatAge(h_state.lastSeen, h_state.status);
+      mvaddstr(internalY, x + w - 2 - static_cast<int>(ageStr.size()), ageStr.c_str());
+      
+      attroff(rowAttr);
+      internalY++;
     }
   }
 
+  void drawHelpCard(int y, int x, int w, int h) {
+    std::string title = "HELP & COMMANDS  [Esc] Back";
+    drawPanelBox(y, x, w, h, title, focus_ == PanelFocus::DETAIL);
+    
+    int lx = x + 3;
+    int rx = x + 22;
+    int currY = y + 2;
+    
+    // 1. Navigation
+    attron(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+    mvaddstr(currY++, lx, "NAVIGATION");
+    attroff(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+    
+    struct KeyHelp { const char *key; const char *desc; };
+    KeyHelp navHelp[] = {
+      {"Tab / S-Tab", "Next/Prev host in details"},
+      {"Enter",       "Open detail view"},
+      {"Esc",         "Back to overview"},
+      {"L / l",       "Toggle log panel focus"},
+      {"U / u",       "Cycle theme (6 themes)"},
+      {"↑ / ↓",       "Navigate or scroll log"},
+      {"PgUp / PgDn", "Fast scroll log/history"},
+      {"/",           "Open command bar"},
+      {"Q / q",       "Quit application"}
+    };
+    
+    for (const auto &nh : navHelp) {
+      if (currY >= y + h - 2) break;
+      attron(COLOR_PAIR(CP_OK) | A_BOLD);
+      mvprintw(currY, lx, "%-17s", nh.key);
+      attroff(COLOR_PAIR(CP_OK) | A_BOLD);
+      
+      attron(COLOR_PAIR(CP_NORMAL));
+      mvaddstr(currY, rx, nh.desc);
+      attroff(COLOR_PAIR(CP_NORMAL));
+      currY++;
+    }
+    
+    currY++;
+    if (currY < y + h - 2) {
+      attron(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+      mvaddstr(currY++, lx, "THEMES");
+      attroff(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+      
+      for (int i = 0; i < NUM_THEMES; ++i) {
+        if (currY >= y + h - 2) break;
+        bool isCurrent = (i == uiMode_);
+        int cp = isCurrent ? CP_WARN : CP_DIM;
+        attron(COLOR_PAIR(cp) | (isCurrent ? A_BOLD : 0));
+        mvprintw(currY++, lx, "%d. %s%s", i + 1, THEME_NAMES[i], isCurrent ? " (active)" : "");
+        attroff(COLOR_PAIR(cp) | (isCurrent ? A_BOLD : 0));
+      }
+    }
+    
+    currY++;
+    if (currY < y + h - 2) {
+      attron(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+      mvaddstr(currY++, lx, "COMMANDS");
+      attroff(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+      
+      KeyHelp cmdHelp[] = {
+        {"/help",           "Show this help screen"},
+        {"/clear",          "Clear scrollback"},
+        {"/host <name>",    "Focus & view host detail"},
+        {"/history <name>", "Show history list for host"}
+      };
+      
+      for (const auto &ch : cmdHelp) {
+        if (currY >= y + h - 2) break;
+        attron(COLOR_PAIR(CP_ALERT) | A_BOLD);
+        mvprintw(currY, lx, "%-17s", ch.key);
+        attroff(COLOR_PAIR(CP_ALERT) | A_BOLD);
+        
+        attron(COLOR_PAIR(CP_NORMAL));
+        mvaddstr(currY, rx, ch.desc);
+        attroff(COLOR_PAIR(CP_NORMAL));
+        currY++;
+      }
+    }
+  }
+
+  void drawDetailPanel(int y, int x, int w, int h, const Thresholds &thresh) {
+    if (viewMode_ == ViewMode::HELP) {
+      drawHelpCard(y, x, w, h);
+      return;
+    }
+    
+    if (sortedHosts_.empty()) {
+      drawPanelBox(y, x, w, h, "DETAIL PANEL", focus_ == PanelFocus::DETAIL);
+      attron(COLOR_PAIR(CP_DIM));
+      mvaddstr(y + h / 2, x + (w - 20) / 2, "No hosts connected.");
+      attroff(COLOR_PAIR(CP_DIM));
+      return;
+    }
+    
+    if (selectedIdx_ >= static_cast<int>(sortedHosts_.size())) {
+      selectedIdx_ = 0;
+    }
+    const auto &host = sortedHosts_[selectedIdx_];
+
+    if (viewMode_ == ViewMode::HISTORY) {
+      drawHistoryView(y, x, w, h);
+      return;
+    }
+
+    std::string title = "DETAIL: " + host.name;
+    drawPanelBox(y, x, w, h, title, focus_ == PanelFocus::DETAIL);
+
+    // 1. Host Header
+    attron(COLOR_PAIR(CP_NORMAL)|A_BOLD);
+    mvprintw(y + 1, x + 2, "%s  (%s)", host.name.c_str(), host.ip.c_str());
+    attroff(A_BOLD);
+    
+    int sCol = statusColorPair(host.status);
+    attron(COLOR_PAIR(sCol)|A_BOLD);
+    std::string sText = " " + std::string(statusStr(host.status)) + " ";
+    mvaddstr(y + 1, x + w - 2 - static_cast<int>(sText.size()) - 15, sText.c_str());
+    attroff(COLOR_PAIR(sCol)|A_BOLD);
+
+    time_t firstTime = getFirstSeen(host.name);
+    std::string trackingStr = "Active: " + formatUptime(time(nullptr) - firstTime);
+    attron(COLOR_PAIR(CP_DIM));
+    mvaddstr(y + 1, x + w - 2 - static_cast<int>(trackingStr.size()), trackingStr.c_str());
+    attroff(COLOR_PAIR(CP_DIM));
+
+    // 2. Metrics summary row
+    for (int col = x + 1; col < x + w - 1; ++col) {
+      mvaddstr(y + 2, col, "─");
+    }
+    
+    char summaryBuf[512];
+    snprintf(summaryBuf, sizeof(summaryBuf), 
+             "CPU:%5.1f%% | RAM:%5.1f%% | DISK:%5.1f%% | LOAD:%4.2f | PROCS:%4d | RX:%6s/s | TX:%6s/s",
+             host.cpu, host.ram, host.disk, host.loadAvg, host.procCount, 
+             formatNet(host.netRxKB).c_str(), formatNet(host.netTxKB).c_str());
+    attron(COLOR_PAIR(CP_NORMAL));
+    mvaddstr(y + 3, x + 2, summaryBuf);
+    attroff(COLOR_PAIR(CP_NORMAL));
+
+    for (int col = x + 1; col < x + w - 1; ++col) {
+      mvaddstr(y + 4, col, "─");
+    }
+
+    // 3. Bento Grid for Sparklines
+    int gridH = (h - 7) / 2;
+    if (gridH < 5) gridH = 5;
+    int gridW = (w - 4) / 2;
+    
+    std::vector<float> cpu_h, ram_h, dsk_h, net_h;
+    for (const auto &s : host.history) {
+      cpu_h.push_back(s.cpu);
+      ram_h.push_back(s.ram);
+      dsk_h.push_back(s.disk);
+      net_h.push_back(s.netRxKB + s.netTxKB);
+    }
+
+    auto drawGraphBox = [&](int gy, int gx, const std::string &gTitle, const std::vector<float> &vals, float tVal) {
+      drawPanelBox(gy, gx, gridW, gridH, gTitle, false);
+      int graphW = gridW - 9;
+      int graphH = gridH - 2;
+      if (graphW > 2 && graphH > 1) {
+        drawSparkline(gy + 1, gx + 1, graphW, graphH, vals, tVal);
+        
+        float minV = 100.f, maxV = 0.f, sumV = 0.f;
+        for (float v : vals) {
+          if (v < minV) minV = v;
+          if (v > maxV) maxV = v;
+          sumV += v;
+        }
+        float avgV = vals.empty() ? 0.f : sumV / vals.size();
+        if (vals.empty()) minV = 0.f;
+
+        attron(COLOR_PAIR(CP_DIM));
+        mvprintw(gy + 1, gx + 1 + graphW + 1, "▲ %3.0f", maxV);
+        mvprintw(gy + 1 + graphH/2, gx + 1 + graphW + 1, "■ %3.0f", avgV);
+        mvprintw(gy + 1 + graphH - 1, gx + 1 + graphW + 1, "▼ %3.0f", minV);
+        attroff(COLOR_PAIR(CP_DIM));
+      }
+    };
+
+    drawGraphBox(y + 5, x + 2, "CPU HIST (60s)", cpu_h, thresh.getCPU(host.name));
+    drawGraphBox(y + 5, x + 2 + gridW, "RAM HIST (60s)", ram_h, thresh.getRAM(host.name));
+    drawGraphBox(y + 5 + gridH, x + 2, "DISK HIST (60s)", dsk_h, thresh.getDisk(host.name));
+    
+    // Max Net value scaling for Net graph
+    float maxNet = 10.f;
+    for (float v : net_h) if (v > maxNet) maxNet = v;
+    // We normalize Net history to percentage scaled by maxNet
+    std::vector<float> net_scaled;
+    for (float v : net_h) net_scaled.push_back((v / maxNet) * 100.f);
+    drawGraphBox(y + 5 + gridH, x + 2 + gridW, "NET I/O HIST", net_scaled, 80.f);
+
+    // 4. Per-core CPU grid
+    int coresY = y + 5 + 2 * gridH;
+    int cols_count = 4;
+    int col_w = (w - 4) / cols_count;
+    int max_cores_visible = std::max(1, h - 1 - (5 + 2 * gridH)) * cols_count;
+    int cores_to_draw = std::min(host.coreCount, max_cores_visible);
+
+    for (int i = 0; i < cores_to_draw; ++i) {
+      int core_row = i / cols_count;
+      int core_col = i % cols_count;
+      int cy = coresY + core_row;
+      int cx = x + 2 + core_col * col_w;
+      
+      if (cy >= y + h - 1) break;
+      
+      float val = host.cores[i];
+      std::string bar = drawBar(val, 6);
+      char buf[64];
+      snprintf(buf, sizeof(buf), "C%-2d [%s] %2.0f%%", i, bar.c_str(), val);
+      
+      int cp = CP_NORMAL;
+      if (val >= thresh.getCPU(host.name)) cp = CP_ALERT;
+      else if (val >= thresh.getCPU(host.name) * 0.8f) cp = CP_WARN;
+      
+      attron(COLOR_PAIR(cp));
+      mvaddnstr(cy, cx, buf, col_w - 1);
+      attroff(COLOR_PAIR(cp));
+    }
+  }
+
+  void drawHistoryView(int y, int x, int w, int h) {
+    if (sortedHosts_.empty() || selectedIdx_ >= static_cast<int>(sortedHosts_.size())) {
+      drawPanelBox(y, x, w, h, "HISTORY VIEW", focus_ == PanelFocus::DETAIL);
+      return;
+    }
+    const auto &host = sortedHosts_[selectedIdx_];
+    std::string title = "HISTORY: " + host.name + "  [Esc] Back";
+    drawPanelBox(y, x, w, h, title, focus_ == PanelFocus::DETAIL);
+    
+    int max_visible = h - 4;
+    int hist_size = static_cast<int>(host.history.size());
+    
+    attron(COLOR_PAIR(CP_ACCENT)|A_BOLD);
+    mvprintw(y + 1, x + 2, "%-10s %7s %7s %7s %8s %8s %8s", "TIME", "CPU%", "RAM%", "DISK%", "LOAD", "RX KB/s", "TX KB/s");
+    attroff(COLOR_PAIR(CP_ACCENT)|A_BOLD);
+    
+    for (int col = x + 1; col < x + w - 1; ++col) {
+      mvaddstr(y + 2, col, "─");
+    }
+    
+    int internalY = y + 3;
+    if (histScroll_ >= hist_size) {
+      histScroll_ = std::max(0, hist_size - 1);
+    }
+    int start_idx = hist_size - 1 - histScroll_;
+    int end_idx = std::max(0, start_idx - max_visible + 1);
+    
+    for (int i = start_idx; i >= end_idx && i < hist_size; --i) {
+      if (internalY >= y + h - 1) break;
+      const auto &s = host.history[i];
+      
+      struct tm *tm_ = localtime(&s.ts);
+      char tbuf[16];
+      strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm_);
+      
+      attron(COLOR_PAIR(CP_NORMAL));
+      mvprintw(internalY, x + 2, "%-10s %6.1f%% %6.1f%% %6.1f%% %8.2f %8.1f %8.1f",
+               tbuf, s.cpu, s.ram, s.disk, s.loadAvg, s.netRxKB, s.netTxKB);
+      attroff(COLOR_PAIR(CP_NORMAL));
+      internalY++;
+    }
+  }
+
+  void drawLogPanel(int y, int x, int w, int h, const Thresholds &thresh, const std::vector<LogEvent> &log) {
+    std::string title = "LOGS (" + std::to_string(log.size()) + ")";
+    if (logScroll_ > 0) {
+      title += "  [Scrollback: " + std::to_string(logScroll_) + "]";
+    }
+    drawPanelBox(y, x, w, h, title, focus_ == PanelFocus::LOG);
+
+    int max_visible = h - 2;
+    int log_size = static_cast<int>(log.size());
+    if (logScroll_ >= log_size) {
+      logScroll_ = std::max(0, log_size - 1);
+    }
+    
+    int start_idx = log_size - 1 - logScroll_;
+    int end_idx = std::max(0, start_idx - max_visible + 1);
+    
+    int internalY = y + 1;
+    for (int i = start_idx; i >= end_idx && i < log_size; --i) {
+      if (internalY >= y + h - 1) break;
+      const auto &ev = log[i];
+      
+      struct tm *tm_ = localtime(&ev.ts);
+      char tbuf[16];
+      strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm_);
+      
+      int cp = CP_NORMAL;
+      std::string typeStr;
+      switch (ev.type) {
+        case LogEventType::CONNECT:
+          cp = CP_OK; typeStr = "CONNECT"; break;
+        case LogEventType::DISCONNECT:
+          cp = CP_WARN; typeStr = "DISCONNECT"; break;
+        case LogEventType::ALERT:
+          cp = CP_ALERT; typeStr = "ALERT"; break;
+        case LogEventType::STALE:
+          cp = CP_WARN; typeStr = "STALE"; break;
+        case LogEventType::METRIC:
+          cp = CP_DIM; typeStr = "METRIC"; break;
+      }
+      
+      attron(COLOR_PAIR(CP_DIM));
+      mvprintw(internalY, x + 2, "[%s] ", tbuf);
+      attroff(COLOR_PAIR(CP_DIM));
+      
+      attron(COLOR_PAIR(cp)|A_BOLD);
+      mvaddstr(internalY, x + 13, padRight(typeStr, 11).c_str());
+      attroff(COLOR_PAIR(cp)|A_BOLD);
+      
+      attron(COLOR_PAIR(CP_NORMAL));
+      mvprintw(internalY, x + 25, "● %-12s (%-12s) → %s", 
+               ev.host.substr(0,12).c_str(), ev.ip.substr(0,12).c_str(), ev.detail.c_str());
+      attroff(COLOR_PAIR(CP_NORMAL));
+      
+      internalY++;
+    }
+  }
+
+  void drawStatusBar(int y, int w) {
+    attron(COLOR_PAIR(CP_NORMAL));
+    mvhline(y, 0, ' ', w);
+    
+    if (cmdActive_) {
+      attron(COLOR_PAIR(CP_ACCENT)|A_BOLD);
+      mvaddstr(y, 1, " > /");
+      addstr(cmdBuf_.c_str());
+      addstr("_");
+      attroff(COLOR_PAIR(CP_ACCENT)|A_BOLD);
+    } else if (cmdErrorTimer_ > 0) {
+      attron(COLOR_PAIR(CP_ALERT)|A_BOLD);
+      mvaddnstr(y, 1, cmdError_.c_str(), w - 2);
+      attroff(COLOR_PAIR(CP_ALERT)|A_BOLD);
+    } else {
+      attron(COLOR_PAIR(CP_DIM));
+      mvaddstr(y, 1, " [↑↓] Navigate   [Tab] Detail/Next   [L] Toggle Log   [U] Cycle Theme   [/] Command   [Q] Quit");
+      attroff(COLOR_PAIR(CP_DIM));
+    }
+    attroff(COLOR_PAIR(CP_NORMAL));
+  }
+
+  bool handleKey(int ch, const std::vector<LogEvent> &log) {
+    if (cmdActive_) {
+      handleCmdKey(ch);
+      return false;
+    }
+    
+    int hostCount = static_cast<int>(sortedHosts_.size());
+    int logCount = static_cast<int>(log.size());
+    
+    switch (ch) {
+      case 'q':
+      case 'Q':
+        teardown();
+        exit(0);
+        
+      case 'u':
+      case 'U':
+        uiMode_ = (uiMode_ + 1) % NUM_THEMES;
+        initColors(uiMode_);
+        break;
+        
+      case '/':
+        cmdActive_ = true;
+        cmdBuf_.clear();
+        break;
+        
+      case 9: // Tab
+        if (viewMode_ == ViewMode::OVERVIEW) {
+          if (hostCount > 0) {
+            viewMode_ = ViewMode::DETAIL;
+            focus_ = PanelFocus::DETAIL;
+            selectedIdx_ = 0;
+          }
+        } else if (viewMode_ == ViewMode::DETAIL) {
+          if (hostCount > 0) {
+            selectedIdx_ = (selectedIdx_ + 1) % hostCount;
+          }
+        }
+        break;
+        
+      case KEY_BTAB: // Shift+Tab
+        if (viewMode_ == ViewMode::DETAIL) {
+          if (hostCount > 0) {
+            selectedIdx_ = (selectedIdx_ + hostCount - 1) % hostCount;
+          }
+        }
+        break;
+        
+      case 27: // Esc
+        if (viewMode_ != ViewMode::OVERVIEW) {
+          viewMode_ = ViewMode::OVERVIEW;
+          focus_ = PanelFocus::LIST;
+        }
+        break;
+        
+      case '\n':
+      case KEY_ENTER:
+        if (viewMode_ == ViewMode::OVERVIEW) {
+          if (hostCount > 0) {
+            viewMode_ = ViewMode::DETAIL;
+            focus_ = PanelFocus::DETAIL;
+          }
+        }
+        break;
+        
+      case 'l':
+      case 'L':
+        if (focus_ == PanelFocus::LOG) {
+          focus_ = PanelFocus::LIST;
+        } else {
+          focus_ = PanelFocus::LOG;
+        }
+        break;
+        
+      case KEY_UP:
+      case 'k':
+        if (focus_ == PanelFocus::LOG) {
+          logScroll_ = std::min(logCount - 1, logScroll_ + 1);
+        } else if (viewMode_ == ViewMode::HISTORY) {
+          histScroll_ = std::min(250, histScroll_ + 1);
+        } else {
+          if (hostCount > 0) {
+            selectedIdx_ = (selectedIdx_ + hostCount - 1) % hostCount;
+          }
+        }
+        break;
+        
+      case KEY_DOWN:
+      case 'j':
+        if (focus_ == PanelFocus::LOG) {
+          logScroll_ = std::max(0, logScroll_ - 1);
+        } else if (viewMode_ == ViewMode::HISTORY) {
+          histScroll_ = std::max(0, histScroll_ - 1);
+        } else {
+          if (hostCount > 0) {
+            selectedIdx_ = (selectedIdx_ + 1) % hostCount;
+          }
+        }
+        break;
+        
+      case KEY_PPAGE: // Page Up
+        if (focus_ == PanelFocus::LOG) {
+          logScroll_ = std::min(logCount - 1, logScroll_ + 10);
+        } else if (viewMode_ == ViewMode::HISTORY) {
+          histScroll_ = std::min(250, histScroll_ + 10);
+        } else {
+          if (hostCount > 0) {
+            selectedIdx_ = std::max(0, selectedIdx_ - 10);
+          }
+        }
+        break;
+        
+      case KEY_NPAGE: // Page Down
+        if (focus_ == PanelFocus::LOG) {
+          logScroll_ = std::max(0, logScroll_ - 10);
+        } else if (viewMode_ == ViewMode::HISTORY) {
+          histScroll_ = std::max(0, histScroll_ - 10);
+        } else {
+          if (hostCount > 0) {
+            selectedIdx_ = std::min(hostCount - 1, selectedIdx_ + 10);
+          }
+        }
+        break;
+        
+      case KEY_RESIZE:
+        endwin(); refresh();
+        getmaxyx(stdscr, rows_, cols_);
+        clear();
+        break;
+    }
+    return false;
+  }
+
   void handleCmdKey(int ch) {
-    if (ch==27||ch==KEY_F(1)) { cmdActive_=false; cmdBuf_.clear(); return; }
-    if (ch=='\n'||ch==KEY_ENTER) { execCmd(cmdBuf_); cmdActive_=false; cmdBuf_.clear(); return; }
-    if ((ch==KEY_BACKSPACE||ch==127) && !cmdBuf_.empty()) { cmdBuf_.pop_back(); return; }
-    if (ch>=32&&ch<127) cmdBuf_+=(char)ch;
+    if (ch == 27) {
+      cmdActive_ = false;
+      cmdBuf_.clear();
+      return;
+    }
+    if (ch == '\n' || ch == KEY_ENTER) {
+      execCmd(cmdBuf_);
+      cmdActive_ = false;
+      cmdBuf_.clear();
+      return;
+    }
+    if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+      if (!cmdBuf_.empty()) {
+        cmdBuf_.pop_back();
+      }
+      return;
+    }
+    if (ch == 9) { // Tab-complete
+      std::vector<std::string> matches;
+      for (const auto &h : sortedHosts_) {
+        if (h.name.rfind(cmdBuf_, 0) == 0) {
+          matches.push_back(h.name);
+        }
+      }
+      if (matches.size() == 1) {
+        cmdBuf_ = matches[0];
+      }
+      return;
+    }
+    if (ch >= 32 && ch < 127) {
+      cmdBuf_ += static_cast<char>(ch);
+    }
   }
 
   void execCmd(const std::string &cmd) {
-    if (cmd=="help"||cmd=="/help") { viewMode_=ViewMode::HELP; return; }
-    if (cmd=="clear") { return; }
-    auto sp = cmd.find(' ');
-    std::string verb = (sp==std::string::npos) ? cmd : cmd.substr(0,sp);
-    std::string target = (sp==std::string::npos) ? "" : cmd.substr(sp+1);
-    if (verb=="viewer"||verb=="/viewer") {
-      int idx=findHost(target);
-      if (idx<0) { cmdError_="Host not found: "+target; cmdErrorTimer_=20; return; }
-      selectedIdx_=idx; histScroll_=0; viewMode_=ViewMode::DETAIL;
-    } else if (verb=="history"||verb=="/history") {
-      int idx=findHost(target);
-      if (idx<0) { cmdError_="Host not found: "+target; cmdErrorTimer_=20; return; }
-      selectedIdx_=idx; historyHost_=target; prevMode_=viewMode_;
-      viewMode_=ViewMode::HISTORY; histScroll_=0;
+    if (cmd == "help" || cmd == "/help") {
+      viewMode_ = ViewMode::HELP;
+      focus_ = PanelFocus::DETAIL;
+      return;
+    }
+    if (cmd == "clear" || cmd == "/clear") {
+      logScroll_ = 0;
+      return;
+    }
+    
+    std::string clean = cmd;
+    if (!clean.empty() && clean[0] == '/') {
+      clean = clean.substr(1);
+    }
+    std::istringstream ss(clean);
+    std::string verb, target;
+    ss >> verb >> target;
+    
+    if (verb == "host" || verb == "viewer") {
+      int idx = findHost(target);
+      if (idx >= 0) {
+        selectedIdx_ = idx;
+        viewMode_ = ViewMode::DETAIL;
+        focus_ = PanelFocus::DETAIL;
+      } else {
+        cmdError_ = "Host not found: " + target;
+        cmdErrorTimer_ = 30;
+      }
+    } else if (verb == "history") {
+      int idx = findHost(target);
+      if (idx >= 0) {
+        selectedIdx_ = idx;
+        historyHost_ = target;
+        viewMode_ = ViewMode::HISTORY;
+        focus_ = PanelFocus::DETAIL;
+        histScroll_ = 0;
+      } else {
+        cmdError_ = "Host not found: " + target;
+        cmdErrorTimer_ = 30;
+      }
     } else {
-      cmdError_="Unknown command: /"+verb+"  (try /help)"; cmdErrorTimer_=20;
+      cmdError_ = "Unknown command: /" + verb + " (try /help)";
+      cmdErrorTimer_ = 30;
     }
   }
 
   int findHost(const std::string &name) {
-    for (int i=0;i<(int)sortedHosts_.size();i++) {
-      if (sortedHosts_[i].name==name) return i;
-      if (sortedHosts_[i].name.find(name)!=std::string::npos) return i;
+    for (int i = 0; i < (int)sortedHosts_.size(); i++) {
+      if (sortedHosts_[i].name == name) return i;
+      if (sortedHosts_[i].name.find(name) != std::string::npos) return i;
     }
     return -1;
   }
 
-  // ── Overview ───────────────────────────────────────────────────────────────
-  void renderOverview(const std::vector<LogEvent> &log, const Thresholds &thresh) {
-    calcOverviewLayout();
-    drawOuterFrame();
-    renderHeader(("[ U ] " + std::string(THEME_NAMES[uiMode_]) + "  [Tab] Detail  [/] Cmd  [Q] Quit").c_str());
-    renderGraphs(thresh);
-    renderTable(thresh);
-    renderLog(log, thresh);
+  time_t getFirstSeen(const std::string &name) const {
+    auto it = firstSeen_.find(name);
+    if (it == firstSeen_.end()) {
+      time_t now = time(nullptr);
+      firstSeen_[name] = now;
+      return now;
+    }
+    return it->second;
   }
 
-  void calcOverviewLayout() {
-    hdrY_=0; graphY_=2; graphH_=4;
-    int graphEnd=graphY_+1+graphH_;
-    tableY_=graphEnd;
-    int hostCount=std::max(1,(int)sortedHosts_.size());
-    tableH_=2+hostCount;
-    if (tableH_>rows_/3) tableH_=rows_/3;
-    if (tableH_<3)       tableH_=3;
-    int tableEnd=tableY_+1+tableH_;
-    logY_=tableEnd; logH_=rows_-logY_-1;
-    if (logH_<2) logH_=2;
-  }
+  int rows_, cols_;
+  int uiMode_;
+  int logScroll_;
+  int histScroll_;
+  int selectedIdx_;
+  int listScroll_;
+  ViewMode viewMode_;
+  PanelFocus focus_;
 
-  void drawOuterFrame() {
-    attron(COLOR_PAIR(C_BOX)|A_BOLD);
-    mvaddstr(0,0,BOX_TL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_TR);
-    mvaddstr(rows_-1,0,BOX_BL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_BR);
-    for(int r=1;r<rows_-1;r++){ mvaddstr(r,0,BOX_V); mvaddstr(r,cols_-1,BOX_V); }
-    drawHSep(graphY_); drawHSep(tableY_);
-    // Table header underline — use ═ consistent with other separators
-    int ths=tableY_+2;
-    if (ths<rows_-1) {
-      attron(COLOR_PAIR(C_GRAY)|A_DIM);
-      mvaddstr(ths,0,BOX_LT);
-      for(int i=1;i<cols_-1;i++) addstr(BOX_H);
-      mvaddstr(ths,cols_-1,BOX_RT);
-      attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-    }
-    drawHSep(logY_);
-    attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-  }
+  bool cmdActive_;
+  std::string cmdBuf_;
+  std::string cmdError_;
+  int cmdErrorTimer_;
+  std::string historyHost_;
 
-  void drawHSep(int y) {
-    if (y<=0||y>=rows_-1) return;
-    mvaddstr(y,0,BOX_LT); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_RT);
-  }
-
-  void renderHeader(const char *hint) {
-    int y=1;
-    attron(COLOR_PAIR(C_HEADER)|A_BOLD);
-    for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
-    // Time left, title center, hint right — all same color
-    std::string ts=fmtTime(time(nullptr));
-    mvaddstr(y,2,ts.c_str());
-    std::string title=" ◈  DISTRIBUTED SYSTEM MONITOR  ◈ ";
-    int tx=(cols_-(int)title.size())/2;
-    if (tx>10) mvaddstr(y,tx,title.c_str());
-    int hintLen=(int)strlen(hint);
-    if(cols_-hintLen-3>0) mvaddstr(y,cols_-hintLen-2,hint);
-    attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
-  }
-
-  void renderGraphs(const Thresholds &th) {
-    (void)th; // th used only in sub-lambdas via pctColor through drawSparkline
-    int innerW=cols_-2, panelW=innerW/3, panelWLast=innerW-panelW*2;
-    int startY=graphY_+1;
-    int online=0,offline=0,warn=0,alert=0,stale=0;
-    float sumCpu=0,sumRam=0,maxCpu=-1,maxRam=-1,maxDisk=-1;
-    std::string hotCpu="-",hotRam="-",hotDisk="-";
-    float sumLoad=0; int sumProc=0, netOnline=0;
-
-    for (const auto &h : sortedHosts_) {
-      if (h.status==HostStatus::OFFLINE) { offline++; continue; }
-      if (h.status==HostStatus::STALE)   { stale++; continue; }
-      online++; netOnline++;
-      sumCpu+=h.cpu; sumRam+=h.ram;
-      sumLoad+=h.loadAvg; sumProc+=h.procCount;
-      if (h.status==HostStatus::WARNING) warn++;
-      if (h.status==HostStatus::ALERT)   alert++;
-      if (h.cpu>maxCpu)  { maxCpu=h.cpu;   hotCpu=h.name; }
-      if (h.ram>maxRam)  { maxRam=h.ram;   hotRam=h.name; }
-      if (h.disk>maxDisk){ maxDisk=h.disk; hotDisk=h.name;}
-    }
-    float avgCpu=netOnline?sumCpu/netOnline:0;
-    float avgRam=netOnline?sumRam/netOnline:0;
-    float avgLoad=netOnline?sumLoad/netOnline:0;
-    int threat=std::min(100, alert*30+warn*10+(int)(avgCpu*0.2f));
-
-    auto drawPanel=[&](int x0, int pw, const char *title, int titleColor) {
-      if (x0>1) {
-        attron(COLOR_PAIR(C_BOX)|A_BOLD);
-        for(int r=startY;r<startY+graphH_;r++) mvaddstr(r,x0,BOX_V);
-        attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-      }
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); mvaddstr(startY,x0+(x0>1?1:0),LINE_H); addstr(" "); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-      attron(COLOR_PAIR(titleColor)|A_BOLD); addstr(title); attroff(COLOR_PAIR(titleColor)|A_BOLD);
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); addstr(" ");
-      int cur=getcurx(stdscr); for(int i=cur;i<x0+pw;i++) addstr(LINE_H);
-      attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    };
-
-    // Panel 1: Threat score with mini bar
-    drawPanel(1, panelW, "TACTICAL RISK", C_RED);
-    {
-      int cRisk=threat>=70?C_RED:threat>=35?C_YELLOW:C_OK_DIM;
-      int barW=std::min(panelW-14, 16); if(barW<4) barW=4;
-      int filled=std::clamp((int)(threat*barW/100), 0, barW);
-      attron(COLOR_PAIR(cRisk)|A_BOLD);
-      mvprintw(startY+1,3,"RISK %3d%% ",threat);
-      for(int b=0;b<filled;b++) addstr(BLOCK_FULL);
-      attroff(COLOR_PAIR(cRisk)|A_BOLD);
-      attron(COLOR_PAIR(C_GRAY)|A_DIM);
-      for(int b=filled;b<barW;b++) addstr(BLOCK_EMPTY);
-      attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      attron(COLOR_PAIR(C_CYAN));
-      mvprintw(startY+2,3,"● %-2d alert  ◐ %-2d warn",alert,warn);
-      mvprintw(startY+3,3,"▶ %-2d on  ▪ %-2d stale  ○ %-2d off",online,stale,offline);
-      attroff(COLOR_PAIR(C_CYAN));
-    }
-
-    // Panel 2: Hot targets
-    int x2=1+panelW;
-    drawPanel(x2, panelW, "HOT TARGETS", C_MAGENTA);
-    {
-      int co1=maxCpu>=0?C_RED:C_GRAY;
-      int co2=maxRam>=0?C_WARN_ORANGE:C_GRAY;
-      int co3=maxDisk>=0?C_CYAN:C_GRAY;
-      attron(COLOR_PAIR(co1)|A_BOLD);
-      mvprintw(startY+1,x2+2,"⬆ CPU  %-10s %5.1f%%",trunc(hotCpu,10).c_str(),std::max(0.f,maxCpu));
-      attroff(COLOR_PAIR(co1)|A_BOLD);
-      attron(COLOR_PAIR(co2)|A_BOLD);
-      mvprintw(startY+2,x2+2,"⬆ RAM  %-10s %5.1f%%",trunc(hotRam,10).c_str(),std::max(0.f,maxRam));
-      attroff(COLOR_PAIR(co2)|A_BOLD);
-      attron(COLOR_PAIR(co3)|A_BOLD);
-      mvprintw(startY+3,x2+2,"⬆ DISK %-10s %5.1f%%",trunc(hotDisk,10).c_str(),std::max(0.f,maxDisk));
-      attroff(COLOR_PAIR(co3)|A_BOLD);
-    }
-
-    // Panel 3: Fleet health
-    int x3=1+panelW*2;
-    drawPanel(x3, panelWLast, "FLEET HEALTH", C_CYAN);
-    {
-      int cCpu=avgCpu>=80?C_RED:avgCpu>=60?C_WARN_ORANGE:C_OK_DIM;
-      int cRam=avgRam>=85?C_RED:avgRam>=65?C_WARN_ORANGE:C_OK_DIM;
-      attron(COLOR_PAIR(cCpu)|A_BOLD); mvprintw(startY+1,x3+2,"CPU avg : %5.1f%%",avgCpu); attroff(COLOR_PAIR(cCpu)|A_BOLD);
-      attron(COLOR_PAIR(cRam)|A_BOLD); mvprintw(startY+2,x3+2,"RAM avg : %5.1f%%",avgRam); attroff(COLOR_PAIR(cRam)|A_BOLD);
-      attron(COLOR_PAIR(C_FLEET)|A_BOLD);
-      mvprintw(startY+3,x3+2,"LOAD/1m : %5.2f  PROCS:%-5d",avgLoad,sumProc);
-      attroff(COLOR_PAIR(C_FLEET)|A_BOLD);
-    }
-  }
-
-  void drawSparkline(int y, int x, int w, int rows,
-                     const std::vector<float> &data, char metric,
-                     const Thresholds &th) {
-    if (w<1||rows<1) return;
-    std::vector<float> vals=data;
-    while((int)vals.size()<w) vals.insert(vals.begin(),0.0f);
-    if((int)vals.size()>w) vals.erase(vals.begin(),vals.begin()+(int)vals.size()-w);
-    for(int row=0;row<rows;row++) {
-      int ry=y+row; move(ry,x);
-      for(int i=0;i<w;i++) {
-        float pct=std::clamp(vals[i],0.0f,100.0f), eff;
-        if(rows==1) eff=pct;
-        else if(row==0) eff=(pct>50.0f)?(pct-50.0f)*2.0f:0.0f;
-        else eff=std::min(pct,50.0f)*2.0f;
-        int level=std::clamp((int)(eff/100.0f*8.0f),0,7);
-        int co=pctColor(pct,"",th,metric);
-        attron(COLOR_PAIR(co));
-        if(eff>0.5f) addstr(SPARK_CHARS[level]); else addch(' ');
-        attroff(COLOR_PAIR(co));
-      }
-    }
-  }
-
-  void drawScrollbar(int x, int y0, int y1, int scroll, int visible, int total) {
-    int trackH=y1-y0+1;
-    if(trackH<2||total<=visible) return;
-    int thumbH=std::max(1,trackH*visible/total);
-    int thumbPos=(total-visible>0)?(trackH-thumbH)*scroll/(total-visible):0;
-    thumbPos=std::clamp(thumbPos,0,trackH-thumbH);
-    for(int i=0;i<trackH;i++) {
-      bool isThumb=(i>=thumbPos&&i<thumbPos+thumbH);
-      if(isThumb) { attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(y0+i,x,"┃"); attroff(COLOR_PAIR(C_CYAN)|A_BOLD); }
-      else        { attron(COLOR_PAIR(C_GRAY)|A_DIM);  mvaddstr(y0+i,x,"│"); attroff(COLOR_PAIR(C_GRAY)|A_DIM); }
-    }
-  }
-
-  // ── Host Table ─────────────────────────────────────────────────────────────
-  void renderTable(const Thresholds &th) {
-    int innerW=cols_-2;
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(tableY_,3," HOST TABLE "); attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-    int cHost=std::min(16,innerW/6), cBar=std::min(16,(innerW-cHost-24)/3);
-    if(cBar<6) cBar=6;
-    int cPct=5, cStatus=8;
-    int hy=tableY_+1, x=2;
-    // Table column headers — slightly dim to not compete with data
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD);
-    mvprintw(hy,x,"%-*s",cHost,"HOST"); x+=cHost+1;
-    mvprintw(hy,x,"%-*s",cBar+cPct,"CPU");  x+=cBar+cPct+1;
-    mvprintw(hy,x,"%-*s",cBar+cPct,"RAM");  x+=cBar+cPct+1;
-    mvprintw(hy,x,"%-*s",cBar+cPct,"DISK");
-    mvprintw(hy,x+cBar+cPct+2,"LOAD");
-    mvprintw(hy,innerW-cStatus,"STATUS");
-    attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-
-    int dataY=tableY_+3, maxRows=logY_-dataY;
-    if(maxRows<0) maxRows=0;
-    int row=0;
-    for(int idx=0;idx<(int)sortedHosts_.size()&&row<maxRows;idx++) {
-      auto &h=sortedHosts_[idx]; int ry=dataY+row; x=2;
-      bool off=(h.status==HostStatus::OFFLINE);
-      bool staleH=(h.status==HostStatus::STALE);
-      int namePairId = off ? C_GRAY : staleH ? C_STALE : C_WHITE_BD;
-      int nameAttr   = (off||staleH) ? A_DIM : A_BOLD;
-      attron(COLOR_PAIR(namePairId)|nameAttr);
-      mvprintw(ry,x,"%-*s",cHost,trunc(h.name,cHost).c_str());
-      attroff(COLOR_PAIR(namePairId)|nameAttr);
-      x+=cHost+1;
-      if(off) {
-        attron(COLOR_PAIR(C_GRAY)|A_DIM);
-        // Show how long ago it was last seen
-        time_t age = time(nullptr) - h.lastSeen;
-        char offMsg[64];
-        if(h.lastSeen>0) snprintf(offMsg,sizeof(offMsg),"OFFLINE  (%ldm ago)",(long)(age/60));
-        else             snprintf(offMsg,sizeof(offMsg),"OFFLINE");
-        mvprintw(ry,x,"%-*s",innerW-x-cStatus-2,offMsg);
-        mvprintw(ry,innerW-cStatus,"OFFLINE");
-        attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-        row++; continue;
-      }
-      if(staleH) {
-        attron(COLOR_PAIR(C_STALE)|A_DIM);
-        time_t age = time(nullptr) - h.lastSeen;
-        char staleMsg[64];
-        if(h.lastSeen>0) snprintf(staleMsg,sizeof(staleMsg),"STALE    (%lds ago)",(long)age);
-        else             snprintf(staleMsg,sizeof(staleMsg),"STALE");
-        mvprintw(ry,x,"%-*s",innerW-x-cStatus-2,staleMsg);
-        mvprintw(ry,innerW-cStatus,"◌ STALE");
-        attroff(COLOR_PAIR(C_STALE)|A_DIM);
-        row++; continue;
-      }
-      auto drawBar=[&](float val,char m,int col){
-        int co=pctColor(val,h.name,th,m);
-        int filled=std::clamp((int)(val/100.0f*cBar),0,cBar);
-        move(ry,col);
-        attron(COLOR_PAIR(co)|A_BOLD);
-        for(int i=0;i<filled;i++) addstr(BLOCK_FULL);
-        attroff(COLOR_PAIR(co)|A_BOLD);
-        attron(COLOR_PAIR(C_GRAY)|A_DIM);
-        for(int i=filled;i<cBar;i++) addstr(BLOCK_EMPTY);
-        attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-        attron(COLOR_PAIR(co)|A_BOLD); printw("%3.0f%% ",val); attroff(COLOR_PAIR(co)|A_BOLD);
-      };
-      int bx=2+cHost+1;
-      drawBar(h.cpu,'c',bx);
-      drawBar(h.ram,'r',bx+cBar+cPct+1);
-      drawBar(h.disk,'d',bx+(cBar+cPct+1)*2);
-      // Load avg
-      int loadX=bx+(cBar+cPct+1)*3;
-      if(loadX+8<innerW-cStatus) {
-        int lc=h.loadAvg>=4?C_RED:h.loadAvg>=2?C_YELLOW:C_OK_DIM;
-        attron(COLOR_PAIR(lc));
-        mvprintw(ry,loadX,"%4.2f",h.loadAvg);
-        attroff(COLOR_PAIR(lc));
-      }
-      const char *sym,*label; int sc;
-      switch(h.status) {
-      case HostStatus::ALERT:   sc=C_RED;    sym=SYM_ONLINE; label=" ALERT"; break;
-      case HostStatus::WARNING: sc=C_YELLOW; sym=SYM_WARN;   label=" WARN"; break;
-      case HostStatus::STALE:   sc=C_STALE;  sym="◌";        label=" STALE"; break;
-      default:                  sc=C_GREEN;  sym=SYM_ONLINE; label=" OK"; break;
-      }
-      attron(COLOR_PAIR(sc)|A_BOLD);
-      mvaddstr(ry,innerW-cStatus,sym); addstr(label);
-      attroff(COLOR_PAIR(sc)|A_BOLD);
-      row++;
-    }
-  }
-
-  // ── Log ────────────────────────────────────────────────────────────────────
-  void renderLog(const std::vector<LogEvent> &log, const Thresholds &th) {
-    std::string logTitle=" EVENT LOG  [↑↓ / PgUp PgDn to scroll] ";
-    int ltx=(cols_-(int)logTitle.size())/2; if(ltx<3) ltx=3;
-    attron(COLOR_PAIR(C_MAGENTA)|A_BOLD); mvaddstr(logY_,ltx,logTitle.c_str()); attroff(COLOR_PAIR(C_MAGENTA)|A_BOLD);
-    int contentY=logY_+1, innerH=logH_; if(innerH<=0) return;
-    int maxScroll=std::max(0,(int)log.size()-innerH);
-    logScroll_=std::clamp(logScroll_,0,maxScroll);
-    int startIdx=(int)log.size()-innerH-logScroll_;
-    if(startIdx<0) startIdx=0;
-    for(int i=0;i<innerH;i++) {
-      int idx=startIdx+i; if(idx<0||idx>=(int)log.size()) continue;
-      const auto &ev=log[idx]; int ry=contentY+i; if(ry>=rows_-1) break;
-      int cx=2, ec; const char *es, *badge;
-      switch(ev.type) {
-      case LogEventType::CONNECT:    ec=C_OK_DIM;      es="CONN   "; badge="▶"; break;
-      case LogEventType::METRIC:     ec=C_GRAY;        es="METRIC "; badge="·"; break;
-      case LogEventType::ALERT:      ec=C_RED;         es="ALERT  "; badge="●"; break;
-      case LogEventType::DISCONNECT: ec=C_WARN_ORANGE; es="DISC   "; badge="◀"; break;
-      case LogEventType::STALE:      ec=C_STALE;       es="STALE  "; badge="◌"; break;
-      default:                       ec=C_NORMAL;      es="INFO   "; badge="·"; break;
-      }
-      // Row: badge | time | host | ip | event type | metric values
-      attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,badge); cx+=2; attroff(COLOR_PAIR(ec)|A_BOLD);
-      attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(ry,cx,fmtTime(ev.ts).c_str()); cx+=10; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(ry,cx,"%-14s",trunc(ev.host,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-      attron(COLOR_PAIR(C_GRAY)|A_DIM); mvprintw(ry,cx,"%-14s",trunc(ev.ip,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,es); cx+=7; attroff(COLOR_PAIR(ec)|A_BOLD);
-      if((ev.type==LogEventType::METRIC||ev.type==LogEventType::ALERT)&&cx+24<cols_-1) {
-        auto pm=[&](float val,char m,const char *lbl){
-          int co=pctColor(val,ev.host,th,m);
-          attron(COLOR_PAIR(co));
-          char mb[16]; snprintf(mb,sizeof(mb),"%s%3.0f%%",lbl,val);
-          mvaddstr(ry,cx,mb); cx+=7;
-          attroff(COLOR_PAIR(co));
-        };
-        pm(ev.cpu,'c',"C:"); pm(ev.ram,'r',"R:"); pm(ev.disk,'d',"D:");
-        if(!ev.detail.empty()&&cx+3<cols_-1) {
-          attron(COLOR_PAIR(C_RED)|A_BOLD);
-          mvaddstr(ry,cx,(" "+ev.detail.substr(0,cols_-cx-3)).c_str());
-          attroff(COLOR_PAIR(C_RED)|A_BOLD);
-        }
-      } else if(!ev.detail.empty()&&cx+3<cols_-1) {
-        attron(COLOR_PAIR(C_GRAY)|A_DIM);
-        mvaddstr(ry,cx,ev.detail.substr(0,cols_-cx-2).c_str());
-        attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      }
-    }
-    char si[32]; snprintf(si,sizeof(si)," %d/%d ",(int)log.size(),MAX_LOG_ENTRIES);
-    attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(rows_-1,cols_-(int)strlen(si)-2,si); attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-    if((int)log.size()>innerH)
-      drawScrollbar(cols_-2,contentY,contentY+innerH-1,logScroll_,innerH,(int)log.size());
-  }
-
-  // ── Detail View ────────────────────────────────────────────────────────────
-  void renderDetailView(const Thresholds &th) {
-    if(selectedIdx_>=(int)sortedHosts_.size()) return;
-    const auto &host=sortedHosts_[selectedIdx_];
-    int hostCount=(int)sortedHosts_.size();
-    attron(COLOR_PAIR(C_BOX)|A_BOLD);
-    mvaddstr(0,0,BOX_TL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_TR);
-    mvaddstr(rows_-1,0,BOX_BL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_BR);
-    for(int r=1;r<rows_-1;r++){ mvaddstr(r,0,BOX_V); mvaddstr(r,cols_-1,BOX_V); }
-    attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    int y=1;
-    attron(COLOR_PAIR(C_HEADER)|A_BOLD);
-    for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
-    attron(COLOR_PAIR(C_TIME)); mvaddstr(y,2,fmtTime(time(nullptr)).c_str()); attroff(COLOR_PAIR(C_TIME));
-    std::string dtitle=std::string(SYM_DIAMOND)+" HOST DETAIL: "+host.name+" "+SYM_DIAMOND;
-    int dtx=(cols_-(int)dtitle.size())/2;
-    if(dtx>12) mvaddstr(y,dtx,dtitle.c_str());
-    const char *dhint="[Tab]Next [U]Theme [Esc]Back [Q]Quit";
-    int dhLen=(int)strlen(dhint);
-    if(cols_-dhLen-3>0) mvaddstr(y,cols_-dhLen-2,dhint);
-    attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(2); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-
-    if(host.status==HostStatus::OFFLINE||host.status==HostStatus::STALE) {
-      int sc=(host.status==HostStatus::STALE)?C_STALE:C_GRAY;
-      attron(COLOR_PAIR(sc)|A_DIM);
-      std::string statLbl=(host.status==HostStatus::STALE)?"STALE":"OFFLINE";
-      std::string offMsg="--- "+host.name+" is "+statLbl;
-      if(host.lastSeen>0) {
-        time_t age=time(nullptr)-host.lastSeen;
-        char ageBuf[32]; snprintf(ageBuf,sizeof(ageBuf)," (last seen %lds ago) ---",(long)age);
-        offMsg+=ageBuf;
-      } else offMsg+=" ---";
-      mvaddstr(rows_/2,(cols_-(int)offMsg.size())/2,offMsg.c_str());
-      attroff(COLOR_PAIR(sc)|A_DIM);
-      renderDetailFooter(hostCount); return;
-    }
-    int curY=3, graphW=cols_-4; if(graphW<10) graphW=10;
-
-    // CPU Sparkline
-    {
-      std::vector<float> cpuH; for(auto &s:host.history) cpuH.push_back(s.cpu);
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD); curY++;
-      if(curY<rows_-2) { drawMetricTitle(curY,"CPU",host.cpu,host.name,th,'c'); curY++; }
-      if(curY<rows_-2) { drawSparkline(curY,2,graphW,1,cpuH,'c',th); curY++; }
-    }
-    // Per-core
-    if(curY<rows_-2&&!host.cores.empty()) {
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-      char coreTitle[48]; snprintf(coreTitle,sizeof(coreTitle)," PROCESSORS (%d cores)  LOAD:%.2f  PROCS:%d ",
-                                   (int)host.cores.size(),host.loadAvg,host.procCount);
-      attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(curY,3,coreTitle); attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-      curY++;
-      int barMaxW=cols_-24; if(barMaxW<10) barMaxW=10;
-      int reserveBelow=12, availCoreRows=rows_-curY-reserveBelow-1;
-      if(availCoreRows<2) availCoreRows=2;
-      int totalCores=(int)host.cores.size();
-      int maxCoreScroll=std::max(0,totalCores-availCoreRows);
-      histScroll_=std::clamp(histScroll_,0,maxCoreScroll);
-      int startCore=histScroll_, showCores=std::min(totalCores-startCore,availCoreRows);
-      for(int ci=0;ci<showCores;ci++) {
-        int coreIdx=startCore+ci; if(curY>=rows_-reserveBelow) break;
-        float val=host.cores[coreIdx];
-        int co=pctColor(val,host.name,th,'c');
-        attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        char lbl[24]; snprintf(lbl,sizeof(lbl)," core%2d ",coreIdx);
-        mvaddstr(curY,2,lbl); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        int barStart=10, barW=barMaxW;
-        int filled=std::clamp((int)(val/100.0f*barW),0,barW);
-        attron(COLOR_PAIR(co)|A_BOLD); move(curY,barStart);
-        for(int b=0;b<filled;b++) addstr(BLOCK_FULL);
-        attroff(COLOR_PAIR(co)|A_BOLD);
-        attron(COLOR_PAIR(C_GRAY)|A_DIM);
-        for(int b=filled;b<barW;b++) addstr(BLOCK_EMPTY);
-        attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-        attron(COLOR_PAIR(co)|A_BOLD);
-        char pctBuf[12]; snprintf(pctBuf,sizeof(pctBuf)," %5.1f%%",val); addstr(pctBuf);
-        attroff(COLOR_PAIR(co)|A_BOLD);
-        curY++;
-      }
-      if(totalCores>availCoreRows) drawScrollbar(cols_-2,curY-showCores,curY-1,histScroll_,availCoreRows,totalCores);
-    }
-    // Network panel
-    if(curY<rows_-7) {
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-      attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(curY,3," NETWORK "); attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-      curY++;
-      if(curY<rows_-6) {
-        attron(COLOR_PAIR(C_GREEN)|A_BOLD);
-        mvprintw(curY,4,"▲ TX: %7.1f KB/s",host.netTxKB);
-        attron(COLOR_PAIR(C_CYAN)|A_BOLD);
-        mvprintw(curY,26,"▼ RX: %7.1f KB/s",host.netRxKB);
-        attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-        curY++;
-      }
-    }
-    // RAM
-    if(curY<rows_-5) {
-      std::vector<float> ramH; for(auto &s:host.history) ramH.push_back(s.ram);
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD); curY++;
-      if(curY<rows_-4) { drawMetricTitle(curY,"RAM",host.ram,host.name,th,'r'); curY++; }
-      if(curY<rows_-3) { drawSparkline(curY,2,graphW,1,ramH,'r',th); curY++; }
-    }
-    // DISK
-    if(curY<rows_-4) {
-      std::vector<float> diskH; for(auto &s:host.history) diskH.push_back(s.disk);
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD); curY++;
-      if(curY<rows_-3) { drawMetricTitle(curY,"DISK",host.disk,host.name,th,'d'); curY++; }
-      if(curY<rows_-2) { drawSparkline(curY,2,graphW,1,diskH,'d',th); curY++; }
-    }
-    // Host info
-    if(curY<rows_-2) {
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(curY); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-      attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(curY,3," HOST INFO "); attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-      curY++;
-      int lc=2, rc=cols_/2;
-      if(curY<rows_-1) {
-        attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(curY,lc,"Name: "); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        attron(COLOR_PAIR(C_CYAN)); addstr(host.name.c_str()); attroff(COLOR_PAIR(C_CYAN));
-        const char *sym,*slbl; int sc;
-        switch(host.status) {
-        case HostStatus::ALERT:   sc=C_RED;    sym=SYM_ONLINE; slbl=" ALERT"; break;
-        case HostStatus::WARNING: sc=C_YELLOW; sym=SYM_WARN;   slbl=" WARN"; break;
-        case HostStatus::STALE:   sc=C_STALE;  sym="◌";        slbl=" STALE"; break;
-        default:                  sc=C_GREEN;  sym=SYM_ONLINE; slbl=" OK"; break;
-        }
-        attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(curY,rc,"Status: "); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        attron(COLOR_PAIR(sc)|A_BOLD); addstr(sym); addstr(slbl); attroff(COLOR_PAIR(sc)|A_BOLD);
-        curY++;
-      }
-      if(curY<rows_-1) {
-        attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(curY,lc,"IP:   "); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        attron(COLOR_PAIR(C_GRAY)); addstr(host.ip.c_str()); attroff(COLOR_PAIR(C_GRAY));
-        attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(curY,rc,"Cores: "); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-        attron(COLOR_PAIR(C_CYAN)); printw("%d",host.coreCount); attroff(COLOR_PAIR(C_CYAN));
-        int tsCol=rc+16;
-        if(tsCol+20<cols_) {
-          attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(curY,tsCol,"Last: "); attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-          attron(COLOR_PAIR(C_CYAN)); addstr(fmtTime(host.lastSeen).c_str()); attroff(COLOR_PAIR(C_CYAN));
-        }
-      }
-    }
-    renderDetailFooter(hostCount);
-  }
-
-  void drawMetricTitle(int y, const char *label, float val,
-                       const std::string &hostname, const Thresholds &th, char metric) {
-    int titleColor=metric=='c'?C_CYAN:metric=='r'?C_GREEN:C_MAGENTA;
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); mvaddstr(y,2,LINE_H); addstr(" "); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    attron(COLOR_PAIR(titleColor)|A_BOLD); addstr(label); attroff(COLOR_PAIR(titleColor)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); addstr(" ");
-    int cur=getcurx(stdscr);
-    char pctBuf[16]; snprintf(pctBuf,sizeof(pctBuf)," %5.1f%% ",val);
-    int pctPos=cols_-(int)strlen(pctBuf)-3;
-    for(int i=cur;i<pctPos;i++) addstr(LINE_H);
-    attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    int co=pctColor(val,hostname,th,metric);
-    attron(COLOR_PAIR(co)|A_BOLD); addstr(pctBuf); attroff(COLOR_PAIR(co)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); addstr(LINE_H); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-  }
-
-  void renderDetailFooter(int hostCount) {
-    char fi[32]; snprintf(fi,sizeof(fi)," %d/%d ",selectedIdx_+1,hostCount);
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(rows_-1,cols_-(int)strlen(fi)-2,fi); attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
-  }
-
-  void renderCmdBar() {
-    int y=rows_-1;
-    attron(COLOR_PAIR(C_HEADER)|A_BOLD);
-    for(int i=0;i<cols_;i++) mvaddch(y,i,' ');
-    mvaddstr(y,1,"> /"); addstr(cmdBuf_.c_str()); addstr("_");
-    attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
-  }
-
-  void renderCmdError() {
-    int y=rows_-1, len=(int)cmdError_.size()+4;
-    int x=(cols_-len)/2; if(x<0) x=0;
-    attron(COLOR_PAIR(C_RED)|A_BOLD|A_BLINK);
-    mvaddstr(y,x,(" "+cmdError_+" ").c_str());
-    attroff(COLOR_PAIR(C_RED)|A_BOLD|A_BLINK);
-  }
-
-  // ── Help View ──────────────────────────────────────────────────────────────
-  void renderHelp() {
-    attron(COLOR_PAIR(C_BOX)|A_BOLD);
-    mvaddstr(0,0,BOX_TL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_TR);
-    mvaddstr(rows_-1,0,BOX_BL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_BR);
-    for(int r=1;r<rows_-1;r++){mvaddstr(r,0,BOX_V);mvaddstr(r,cols_-1,BOX_V);}
-    attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    int y=1;
-    attron(COLOR_PAIR(C_HEADER)|A_BOLD);
-    for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
-    std::string htitle=std::string(SYM_DIAMOND)+" HELP "+SYM_DIAMOND;
-    mvaddstr(y,(cols_-(int)htitle.size())/2,htitle.c_str());
-    mvaddstr(y,cols_-24,"[U] Theme  [Esc] Close");
-    attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(2); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    y=4; int lx=4, rx=28;
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(y++,lx,"NAVIGATION"); attroff(COLOR_PAIR(C_CYAN)|A_BOLD); y++;
-    struct HL { const char *key, *desc; };
-    HL nav[]={{"Tab","Enter detail view / next host"},{"Shift+Tab","Previous host"},
-               {"U / Ctrl+U","Cycle UI theme (6 themes)"},{"Esc","Back to overview"},
-               {"↑ ↓","Scroll"},{"PgUp/PgDn","Scroll fast"},{"Q","Quit"},{"/","Open command bar"}};
-    for(auto &h:nav){
-      if(y>=rows_-6) break;
-      attron(COLOR_PAIR(C_GREEN)|A_BOLD); mvprintw(y,lx,"%-16s",h.key); attroff(COLOR_PAIR(C_GREEN)|A_BOLD);
-      attron(COLOR_PAIR(C_WHITE_BD)); mvaddstr(y,rx,h.desc); attroff(COLOR_PAIR(C_WHITE_BD));
-      y++;
-    }
-    y+=2;
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(y++,lx,"THEMES"); attroff(COLOR_PAIR(C_CYAN)|A_BOLD); y++;
-    for(int i=0;i<NUM_THEMES;i++) {
-      if(y>=rows_-2) break;
-      bool cur=(i==uiMode_);
-      attron(COLOR_PAIR(cur?C_YELLOW:C_WHITE_BD)|(cur?A_BOLD:0));
-      mvprintw(y++,lx,"%d. %s%s",i+1,THEME_NAMES[i],cur?" (active)":"");
-      attroff(COLOR_PAIR(cur?C_YELLOW:C_WHITE_BD));
-    }
-    y+=2;
-    attron(COLOR_PAIR(C_CYAN)|A_BOLD); mvaddstr(y++,lx,"COMMANDS"); attroff(COLOR_PAIR(C_CYAN)|A_BOLD); y++;
-    HL cmds[]={{"/help","Show this help"},{"/viewer <host>","Jump to host detail"},{"/history <host>","Show host history"}};
-    for(auto &h:cmds){
-      if(y>=rows_-2) break;
-      attron(COLOR_PAIR(C_YELLOW)|A_BOLD); mvprintw(y,lx,"%-22s",h.key); attroff(COLOR_PAIR(C_YELLOW)|A_BOLD);
-      attron(COLOR_PAIR(C_WHITE_BD)); mvaddstr(y,rx,h.desc); attroff(COLOR_PAIR(C_WHITE_BD));
-      y++;
-    }
-  }
-
-  // ── History View ────────────────────────────────────────────────────────────
-  void renderHistoryView() {
-    if(selectedIdx_>=(int)sortedHosts_.size()) return;
-    const auto &host=sortedHosts_[selectedIdx_];
-    attron(COLOR_PAIR(C_BOX)|A_BOLD);
-    mvaddstr(0,0,BOX_TL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_TR);
-    mvaddstr(rows_-1,0,BOX_BL); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_BR);
-    for(int r=1;r<rows_-1;r++){mvaddstr(r,0,BOX_V);mvaddstr(r,cols_-1,BOX_V);}
-    attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    int y=1;
-    attron(COLOR_PAIR(C_HEADER)|A_BOLD);
-    for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
-    attron(COLOR_PAIR(C_TIME)); mvaddstr(y,2,fmtTime(time(nullptr)).c_str()); attroff(COLOR_PAIR(C_TIME));
-    std::string htitle=std::string(SYM_DIAMOND)+" HISTORY: "+host.name+" "+SYM_DIAMOND;
-    mvaddstr(y,(cols_-(int)htitle.size())/2,htitle.c_str());
-    mvaddstr(y,cols_-14,"[Esc] Back");
-    attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(2); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    if(host.status==HostStatus::OFFLINE||host.status==HostStatus::STALE) {
-      int sc=(host.status==HostStatus::STALE)?C_STALE:C_GRAY;
-      attron(COLOR_PAIR(sc)|A_DIM);
-      std::string msg="--- "+host.name+" is "+(host.status==HostStatus::STALE?"STALE":"OFFLINE")+" ---";
-      mvaddstr(rows_/2,(cols_-(int)msg.size())/2,msg.c_str());
-      attroff(COLOR_PAIR(sc)|A_DIM);
-      if(!host.history.empty()) {
-        // Still show history even if stale
-      } else return;
-    }
-    y=3;
-    int cTime=12,cCpu=10,cRam=10,cDisk=10,cLoad=10;
-    attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-    mvprintw(y,4,"%-*s",cTime,"TIME");
-    mvprintw(y,4+cTime,"%-*s",cCpu,"CPU%");
-    mvprintw(y,4+cTime+cCpu,"%-*s",cRam,"RAM%");
-    mvprintw(y,4+cTime+cCpu+cRam,"%-*s",cDisk,"DISK%");
-    mvprintw(y,4+cTime+cCpu+cRam+cDisk,"%-*s",cLoad,"LOAD");
-    if(cols_>80) mvprintw(y,4+cTime+cCpu+cRam+cDisk+cLoad,"NET RX/TX KB/s");
-    attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
-    attron(COLOR_PAIR(C_BOX)|A_BOLD); drawHSep(4); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
-    int dataY=5, innerH=rows_-dataY-1; if(innerH<1) return;
-    int total=(int)host.history.size();
-    int maxScroll=std::max(0,total-innerH);
-    histScroll_=std::clamp(histScroll_,0,maxScroll);
-    for(int i=0;i<innerH&&i<total;i++) {
-      int idx=total-1-i-histScroll_; if(idx<0) break;
-      const auto &s=host.history[idx]; int ry=dataY+i; if(ry>=rows_-1) break;
-      attron(COLOR_PAIR(C_CYAN)); mvprintw(ry,4,"%-*s",cTime,fmtTime(s.ts).c_str()); attroff(COLOR_PAIR(C_CYAN));
-      auto dP=[&](float val,char m,int col){
-        int co=pctColor(val,host.name,Thresholds{},m);
-        attron(COLOR_PAIR(co)|A_BOLD); mvprintw(ry,col,"%6.1f%%",val); attroff(COLOR_PAIR(co)|A_BOLD);
-      };
-      dP(s.cpu,'c',4+cTime); dP(s.ram,'r',4+cTime+cCpu); dP(s.disk,'d',4+cTime+cCpu+cRam);
-      int lc=s.loadAvg>=4?C_RED:s.loadAvg>=2?C_YELLOW:C_OK_DIM;
-      attron(COLOR_PAIR(lc)); mvprintw(ry,4+cTime+cCpu+cRam+cDisk,"%.2f",s.loadAvg); attroff(COLOR_PAIR(lc));
-      if(cols_>80) {
-        attron(COLOR_PAIR(C_GREEN)); mvprintw(ry,4+cTime+cCpu+cRam+cDisk+cLoad,"▲%-6.1f",s.netTxKB); attroff(COLOR_PAIR(C_GREEN));
-        attron(COLOR_PAIR(C_CYAN)); mvprintw(ry,4+cTime+cCpu+cRam+cDisk+cLoad+8,"▼%-6.1f",s.netRxKB); attroff(COLOR_PAIR(C_CYAN));
-      }
-    }
-    if(total>innerH) drawScrollbar(cols_-2,dataY,dataY+innerH-1,histScroll_,innerH,total);
-    char cnt[32]; snprintf(cnt,sizeof(cnt)," %d samples ",total);
-    attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(rows_-1,cols_-(int)strlen(cnt)-2,cnt); attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-  }
+  time_t startTime_;
+  std::vector<HostState> sortedHosts_;
+  mutable std::unordered_map<std::string, time_t> firstSeen_;
 };
 
 } // namespace monitor::ui

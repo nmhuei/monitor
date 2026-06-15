@@ -1,10 +1,8 @@
 /*
  * agent.cpp — metrics collection agent
- * Fixed: async CPU, auth token, new metrics (net, load, procs), SO_SNDTIMEO.
- * Usage: ./agent -server <host>:<port> -interval <sec> -name <hostname>
- *               [-disk <path>] [-config <path>] [-token <secret>] [-fg]
+ * Separates collection and sending threads; supports a local backpressure queue.
  */
-#include "../../include/json_helper.hpp"
+#include "../../include/json_wrapper.hpp"
 #include "../../include/metrics_collector.hpp"
 #include "../../include/net_framing.hpp"
 #include "../../include/protocol.hpp"
@@ -26,11 +24,24 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <queue>
+#include <deque>
+#include <condition_variable>
+#include <mutex>
 
 using namespace monitor;
 
+// ── Queue & Thread-safety ───────────────────────────────────────────────────
 static std::atomic<bool> g_running{true};
-static void sigHandler(int) { g_running = false; }
+static std::mutex g_queueMtx;
+static std::condition_variable g_queueCv;
+static std::deque<std::string> g_pendingQueue;
+static constexpr size_t MAX_PENDING_ITEMS = 120; // Up to 10 mins at 5s interval
+
+static void sigHandler(int) {
+  g_running = false;
+  g_queueCv.notify_all();
+}
 
 static bool daemonizeAgent() {
   pid_t pid = fork(); if (pid < 0) return false; if (pid > 0) _exit(0);
@@ -47,7 +58,6 @@ static int connectToServer(const std::string &host, uint16_t port) {
     return -1;
   int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
   if (fd < 0) { freeaddrinfo(res); return -1; }
-  // Send timeout to avoid blocking forever on broken network
   struct timeval tv{}; tv.tv_sec = 10;
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
@@ -86,6 +96,158 @@ static AgentConfig loadAgentConfig(const std::string &path) {
   return cfg;
 }
 
+// ── Collector Loop ───────────────────────────────────────────────────────────
+static void collectLoop(metrics::AsyncCpuSampler &cpuSampler, metrics::NetRaw &prevNet,
+                        const std::string &agentName, const std::string &diskPath, int interval) {
+  while (g_running) {
+    auto sampleRes = metrics::collectWith(cpuSampler, prevNet, diskPath);
+    std::string payload;
+    
+    if (sampleRes.valid) {
+      auto& s = sampleRes.sample;
+      time_t now = time(nullptr);
+      payload = json::encode(agentName, s.cpu, s.ram, s.disk,
+                             now, s.cores,
+                             s.netRxKB, s.netTxKB,
+                             s.loadAvg, s.procCount);
+    } else {
+      // Send heartbeat instead of fake zero metric if validation fails
+      nlohmann::json heartbeatMsg;
+      heartbeatMsg["type"] = "heartbeat";
+      heartbeatMsg["host"] = agentName;
+      heartbeatMsg["error"] = sampleRes.error;
+      payload = heartbeatMsg.dump();
+      std::cerr << "[WARN] Metric collection failed. Sending heartbeat error: " << sampleRes.error << "\n";
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(g_queueMtx);
+      g_pendingQueue.push_back(payload);
+      if (g_pendingQueue.size() > MAX_PENDING_ITEMS) {
+        g_pendingQueue.pop_front(); // drop oldest
+      }
+    }
+    g_queueCv.notify_one();
+
+    for (int i = 0; i < interval && g_running; ++i) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+}
+
+// ── Sender Loop ──────────────────────────────────────────────────────────────
+static void sendLoop(const std::string &serverHost, uint16_t serverPort, const AgentConfig &cfg, const std::string &agentName) {
+  int fd = -1;
+  int failedAttempts = 0;
+
+  while (g_running) {
+    std::string payload;
+    {
+      std::unique_lock<std::mutex> lk(g_queueMtx);
+      g_queueCv.wait(lk, []() { return !g_running || !g_pendingQueue.empty(); });
+      if (!g_running && g_pendingQueue.empty()) {
+        break;
+      }
+      payload = g_pendingQueue.front();
+    }
+
+    if (fd < 0) {
+      std::cout << "Connecting to " << serverHost << ":" << serverPort << "...\n";
+      fd = connectToServer(serverHost, serverPort);
+      if (fd < 0) {
+        failedAttempts++;
+        std::cout << "Connection failed (attempt " << failedAttempts;
+        if (cfg.maxRetries > 0) std::cout << "/" << cfg.maxRetries;
+        std::cout << "). Retrying in " << cfg.reconnectSec << "s...\n";
+        if (cfg.maxRetries > 0 && failedAttempts >= cfg.maxRetries) {
+          std::cout << "Max retries reached. Stopping.\n";
+          g_running = false;
+          g_queueCv.notify_all();
+          break;
+        }
+        for (int i = 0; i < cfg.reconnectSec && g_running; i++) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        continue;
+      }
+      failedAttempts = 0;
+      std::cout << "Connected. Authenticating...\n";
+
+      // Perform handshake
+      nlohmann::json authMsg;
+      authMsg["type"] = "auth";
+      authMsg["token"] = cfg.authToken;
+      authMsg["version"] = "1";
+      if (!net::sendMsg(fd, authMsg.dump())) {
+        std::cout << "Auth handshake send failed — disconnected.\n";
+        close(fd); fd = -1;
+        for (int i = 0; i < cfg.reconnectSec && g_running; i++) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        continue;
+      }
+      std::string resp = net::recvMsg(fd);
+      if (resp.empty()) {
+        std::cout << "No response for auth handshake — disconnected.\n";
+        close(fd); fd = -1;
+        for (int i = 0; i < cfg.reconnectSec && g_running; i++) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        continue;
+      }
+      try {
+        auto jResp = nlohmann::json::parse(resp);
+        if (jResp.contains("error")) {
+          std::string errStr = jResp["error"].get<std::string>();
+          std::cout << "Auth failed: " << errStr << std::endl;
+          close(fd); fd = -1;
+          if (errStr == "auth_failed") {
+            std::cout << "Shutting down agent due to authentication failure." << std::endl;
+            g_running = false;
+            g_queueCv.notify_all();
+            break;
+          }
+          for (int i = 0; i < cfg.reconnectSec && g_running; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+          }
+          continue;
+        }
+      } catch (...) {
+        std::cout << "Invalid auth response from server.\n";
+        close(fd); fd = -1;
+        for (int i = 0; i < cfg.reconnectSec && g_running; i++) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        continue;
+      }
+      std::cout << "Authentication successful.\n";
+    }
+
+    // Check socket health
+    int sockErr = 0; socklen_t errLen = sizeof(sockErr);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen) < 0 || sockErr != 0) {
+      close(fd); fd = -1;
+      continue;
+    }
+
+    if (!net::sendMsg(fd, payload)) {
+      std::cout << "Send failed — disconnected.\n";
+      close(fd); fd = -1;
+      continue;
+    }
+
+    // Success! Remove from front of queue
+    {
+      std::lock_guard<std::mutex> lk(g_queueMtx);
+      if (!g_pendingQueue.empty()) {
+        g_pendingQueue.pop_front();
+      }
+    }
+  }
+
+  if (fd >= 0) close(fd);
+}
+
 int main(int argc, char **argv) {
   std::string serverHost="127.0.0.1";
   uint16_t serverPort=DEFAULT_PORT;
@@ -119,71 +281,20 @@ int main(int argc, char **argv) {
   std::cout << "Server: " << serverHost << ":" << serverPort << "\n";
   std::cout << "Interval: " << interval << "s | Auth: " << (cfg.authToken.empty()?"none":"***") << "\n";
 
-  // Start async CPU sampler — does not block collect()
   metrics::AsyncCpuSampler cpuSampler;
   metrics::NetRaw prevNet = metrics::readNetRaw();
 
   // Warm up CPU sampler (1 cycle)
   std::this_thread::sleep_for(std::chrono::seconds(1));
 
-  int fd=-1, failedAttempts=0;
+  // Spawn threads
+  std::thread collectThread(collectLoop, std::ref(cpuSampler), std::ref(prevNet), agentName, diskPath, interval);
+  std::thread sendThread(sendLoop, serverHost, serverPort, cfg, agentName);
 
-  while (g_running) {
-    if (fd < 0) {
-      std::cout << "Connecting to " << serverHost << ":" << serverPort << "...\n";
-      fd = connectToServer(serverHost, serverPort);
-      if (fd < 0) {
-        failedAttempts++;
-        std::cout << "Connection failed (attempt " << failedAttempts;
-        if (cfg.maxRetries>0) std::cout << "/" << cfg.maxRetries;
-        std::cout << "). Retrying in " << cfg.reconnectSec << "s...\n";
-        if (cfg.maxRetries>0 && failedAttempts>=cfg.maxRetries) {
-          std::cout << "Max retries reached. Stopping.\n"; break;
-        }
-        for (int i=0;i<cfg.reconnectSec&&g_running;i++)
-          std::this_thread::sleep_for(std::chrono::seconds(1));
-        continue;
-      }
-      failedAttempts=0;
-      std::cout << "Connected.\n";
-    }
+  // Wait for signal
+  if (collectThread.joinable()) collectThread.join();
+  if (sendThread.joinable()) sendThread.join();
 
-    // Collect (non-blocking CPU)
-    auto sample = metrics::collectWith(cpuSampler, prevNet, diskPath);
-
-    // Check socket health
-    int sockErr=0; socklen_t errLen=sizeof(sockErr);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen)<0 || sockErr!=0) {
-      close(fd); fd=-1;
-      for(int i=0;i<cfg.reconnectSec&&g_running;i++)
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-
-    time_t now=time(nullptr);
-    std::string payload=json::encode(agentName, sample.cpu, sample.ram, sample.disk,
-                                     now, sample.cores,
-                                     sample.netRxKB, sample.netTxKB,
-                                     sample.loadAvg, sample.procCount,
-                                     cfg.authToken);
-
-    if (!net::sendMsg(fd, payload)) {
-      std::cout << "Send failed — disconnected.\n";
-      close(fd); fd=-1;
-      for(int i=0;i<cfg.reconnectSec&&g_running;i++)
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-
-    std::cout << "[" << agentName << "] cpu=" << (int)sample.cpu
-              << "% ram=" << (int)sample.ram << "% load=" << sample.loadAvg
-              << " net_rx=" << (int)sample.netRxKB << "KB tx=" << (int)sample.netTxKB << "KB\n";
-
-    for (int i=0;i<interval&&g_running;i++)
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-  }
-
-  if (fd>=0) close(fd);
   std::cout << "\nAgent stopped.\n";
   return 0;
 }

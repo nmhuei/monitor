@@ -1,11 +1,11 @@
 #pragma once
 /*
  * Thread-safe per-host metric store.
- * v2: Added STALE status, markStaleOffline(), query methods for viewer
- * protocol.
+ * v3: Sharded lock, JSONL atomic persistence, nlohmann/json integration.
  */
 #include "protocol.hpp"
 #include "thresholds.hpp"
+#include "third_party/json.hpp"
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -20,8 +20,7 @@
 
 namespace monitor {
 
-// ── Serialization helpers
-// ─────────────────────────────────────────────────────
+// ── Serialization helpers (Legacy compatibility) ───────────────────────────
 inline std::string pipeEncode(const std::string &s) {
   std::string out;
   out.reserve(s.size());
@@ -56,7 +55,7 @@ inline std::string pipeDecode(const std::string &s) {
   return out;
 }
 
-// JSON string escape (minimal)
+// Minimal JSON string escape helper for custom JSON output
 inline std::string jsonStr(const std::string &s) {
   std::string out;
   out += '"';
@@ -78,8 +77,7 @@ inline std::string jsonStr(const std::string &s) {
   return out;
 }
 
-// ── Data structures
-// ───────────────────────────────────────────────────────────
+// ── Data structures ───────────────────────────────────────────────────────────
 struct HistorySample {
   time_t ts;
   float cpu, ram, disk;
@@ -127,27 +125,31 @@ struct LogEvent {
   std::string detail;
 };
 
-// ── MetricsStore
-// ──────────────────────────────────────────────────────────────
+// ── MetricsStore ──────────────────────────────────────────────────────────────
 class MetricsStore {
 public:
   std::pair<HostStatus, HostStatus> upsert(const MetricPayload &p, const Thresholds &thresh) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto &h = hosts_[p.host];
-    HostStatus prev = h.status;
-    h.name = p.host;
-    h.ip = p.ip;
-    h.push(p);
+    HostStatus prev;
+    HostStatus cur;
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      auto &h = hosts_[p.host];
+      prev = h.status;
+      h.name = p.host;
+      h.ip = p.ip;
+      h.push(p);
 
-    bool alert = (p.cpu >= thresh.getCPU(p.host)) ||
-                 (p.ram >= thresh.getRAM(p.host)) ||
-                 (p.disk >= thresh.getDisk(p.host));
-    bool warn = (p.cpu >= thresh.getCPU(p.host) * 0.85f) ||
-                (p.ram >= thresh.getRAM(p.host) * 0.85f) ||
-                (p.disk >= thresh.getDisk(p.host) * 0.85f);
-    h.status = alert  ? HostStatus::ALERT
-               : warn ? HostStatus::WARNING
-                      : HostStatus::ONLINE;
+      bool alert = (p.cpu >= thresh.getCPU(p.host)) ||
+                   (p.ram >= thresh.getRAM(p.host)) ||
+                   (p.disk >= thresh.getDisk(p.host));
+      bool warn = (p.cpu >= thresh.getCPU(p.host) * 0.85f) ||
+                  (p.ram >= thresh.getRAM(p.host) * 0.85f) ||
+                  (p.disk >= thresh.getDisk(p.host) * 0.85f);
+      h.status = alert  ? HostStatus::ALERT
+                 : warn ? HostStatus::WARNING
+                        : HostStatus::ONLINE;
+      cur = h.status;
+    }
 
     LogEvent ev;
     ev.ts = p.timestamp;
@@ -156,6 +158,9 @@ public:
     ev.cpu = p.cpu;
     ev.ram = p.ram;
     ev.disk = p.disk;
+    bool alert = (p.cpu >= thresh.getCPU(p.host)) ||
+                 (p.ram >= thresh.getRAM(p.host)) ||
+                 (p.disk >= thresh.getDisk(p.host));
     if (alert) {
       ev.type = LogEventType::ALERT;
       if (p.cpu >= thresh.getCPU(p.host))
@@ -167,75 +172,100 @@ public:
     } else {
       ev.type = LogEventType::METRIC;
     }
-    pushLog(ev);
-    return {prev, h.status};
+
+    {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      pushLog(ev);
+    }
+    return {prev, cur};
   }
 
   void setOnline(const std::string &host, const std::string &ip, int fd) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto &h = hosts_[host];
-    h.name = host;
-    h.ip = ip;
-    h.fd = fd;
-    h.status = HostStatus::ONLINE;
-    h.lastSeen = time(nullptr);
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      auto &h = hosts_[host];
+      h.name = host;
+      h.ip = ip;
+      h.fd = fd;
+      h.status = HostStatus::ONLINE;
+      h.lastSeen = time(nullptr);
+    }
     LogEvent ev;
     ev.ts = time(nullptr);
     ev.host = host;
     ev.ip = ip;
     ev.type = LogEventType::CONNECT;
-    pushLog(ev);
+    {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      pushLog(ev);
+    }
   }
 
   void setOffline(const std::string &host) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = hosts_.find(host);
-    if (it != hosts_.end()) {
-      it->second.status = HostStatus::OFFLINE;
-      it->second.fd = -1;
+    std::string ip;
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      auto it = hosts_.find(host);
+      if (it != hosts_.end()) {
+        it->second.status = HostStatus::OFFLINE;
+        it->second.fd = -1;
+        ip = it->second.ip;
+      }
     }
     LogEvent ev;
     ev.ts = time(nullptr);
     ev.host = host;
-    ev.ip = (it != hosts_.end() ? it->second.ip : "");
+    ev.ip = ip;
     ev.type = LogEventType::DISCONNECT;
-    pushLog(ev);
+    {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      pushLog(ev);
+    }
   }
 
   // Called by stale-checker thread every few seconds
   // Returns {online_count, stale_count}
   std::pair<int,int> markStaleOffline(int staleSec, int offlineSec) {
-    std::lock_guard<std::mutex> lk(mtx_);
     time_t now = time(nullptr);
     int online = 0, stale = 0;
-    for (auto &[name, h] : hosts_) {
-      if (h.status == HostStatus::OFFLINE) continue;
-      if (h.lastSeen == 0) continue;
-      time_t age = now - h.lastSeen;
-      if (age >= offlineSec) {
-        if (h.status != HostStatus::OFFLINE) {
-          h.status = HostStatus::OFFLINE;
-          h.fd = -1;
-          LogEvent ev;
-          ev.ts = now; ev.host = name; ev.ip = h.ip;
-          ev.type = LogEventType::DISCONNECT;
-          ev.detail = "timeout (" + std::to_string(age) + "s)";
-          pushLog(ev);
+    std::vector<LogEvent> eventsToPush;
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      for (auto &[name, h] : hosts_) {
+        if (h.status == HostStatus::OFFLINE) continue;
+        if (h.lastSeen == 0) continue;
+        time_t age = now - h.lastSeen;
+        if (age >= offlineSec) {
+          if (h.status != HostStatus::OFFLINE) {
+            h.status = HostStatus::OFFLINE;
+            h.fd = -1;
+            LogEvent ev;
+            ev.ts = now; ev.host = name; ev.ip = h.ip;
+            ev.type = LogEventType::DISCONNECT;
+            ev.detail = "timeout (" + std::to_string(age) + "s)";
+            eventsToPush.push_back(ev);
+          }
+        } else if (age >= staleSec) {
+          if (h.status != HostStatus::STALE && h.status != HostStatus::OFFLINE) {
+            h.status = HostStatus::STALE;
+            LogEvent ev;
+            ev.ts = now; ev.host = name; ev.ip = h.ip;
+            ev.type = LogEventType::STALE;
+            ev.detail = "no metric for " + std::to_string(age) + "s";
+            eventsToPush.push_back(ev);
+          }
+          stale++;
+        } else {
+          if (h.status == HostStatus::ONLINE || h.status == HostStatus::WARNING ||
+              h.status == HostStatus::ALERT)
+            online++;
         }
-      } else if (age >= staleSec) {
-        if (h.status != HostStatus::STALE && h.status != HostStatus::OFFLINE) {
-          h.status = HostStatus::STALE;
-          LogEvent ev;
-          ev.ts = now; ev.host = name; ev.ip = h.ip;
-          ev.type = LogEventType::STALE;
-          ev.detail = "no metric for " + std::to_string(age) + "s";
-          pushLog(ev);
-        }
-        stale++;
-      } else {
-        if (h.status == HostStatus::ONLINE || h.status == HostStatus::WARNING ||
-            h.status == HostStatus::ALERT)
-          online++;
+      }
+    }
+    if (!eventsToPush.empty()) {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      for (const auto &ev : eventsToPush) {
+        pushLog(ev);
       }
     }
     return {online, stale};
@@ -243,14 +273,14 @@ public:
 
   // Update lastSeen without a full metric push (heartbeat)
   void touchLastSeen(const std::string &host) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     auto it = hosts_.find(host);
     if (it != hosts_.end())
       it->second.lastSeen = time(nullptr);
   }
 
   std::vector<HostState> snapshot() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     std::vector<HostState> v;
     v.reserve(hosts_.size());
     for (auto &[k, h] : hosts_)
@@ -259,13 +289,13 @@ public:
   }
 
   std::vector<LogEvent> logSnapshot() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(logMtx_);
     return {log_.begin(), log_.end()};
   }
 
   // ── Query helpers for viewer protocol ────────────────────────────────────
   std::string hostsJson() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     std::string o = "[";
     bool first = true;
     // Sort by status severity then name
@@ -297,7 +327,7 @@ public:
   }
 
   std::string historyJson(const std::string &host, int n) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     auto it = hosts_.find(host);
     if (it == hosts_.end())
       return "[]";
@@ -321,7 +351,7 @@ public:
   }
 
   std::string logJson(int n) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(logMtx_);
     int start = std::max(0, (int)log_.size() - n);
     std::string o = "[";
     static const char *typeNames[] = {"CONNECT", "METRIC", "ALERT",
@@ -348,18 +378,16 @@ public:
 
   // Configure the directory where per-host JSONL history files are stored.
   void setHistoryDir(const std::string &dir, int maxLines) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     historyDir_ = dir;
     historyMaxLines_ = maxLines;
-    // Create directory if it does not exist
     std::filesystem::create_directories(dir);
   }
 
   // Pre-load up to `n` recent history samples per host from JSONL files in
-  // historyDir_. Files are named <host>.jsonl, one JSON object per line with
-  // fields: ts, cpu, ram, disk, rx, tx, load, procs.
+  // historyDir_. Files are named <host>.jsonl, one JSON object per line.
   void loadHistoryFiles(int n) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(hostsMtx_);
     if (historyDir_.empty()) return;
     std::error_code ec;
     if (!std::filesystem::exists(historyDir_, ec)) return;
@@ -372,25 +400,21 @@ public:
       std::string line;
       while (std::getline(in, line)) {
         if (line.empty()) continue;
-        // Minimal parse: extract numeric fields by key
-        auto getNum = [&](const std::string &key) -> double {
-          auto pos = line.find("\"" + key + "\":");
-          if (pos == std::string::npos) return 0.0;
-          pos += key.size() + 3;
-          return std::stod(line.substr(pos));
-        };
         try {
+          auto j = nlohmann::json::parse(line);
           HistorySample s;
-          s.ts        = (time_t)getNum("ts");
-          s.cpu       = (float)getNum("cpu");
-          s.ram       = (float)getNum("ram");
-          s.disk      = (float)getNum("disk");
-          s.netRxKB   = (float)getNum("rx");
-          s.netTxKB   = (float)getNum("tx");
-          s.loadAvg   = (float)getNum("load");
-          s.procCount = (int)getNum("procs");
+          s.ts        = static_cast<time_t>(j.value("ts", 0LL));
+          s.cpu       = j.value("cpu", 0.0f);
+          s.ram       = j.value("ram", 0.0f);
+          s.disk      = j.value("disk", 0.0f);
+          s.netRxKB   = j.value("rx", 0.0f);
+          s.netTxKB   = j.value("tx", 0.0f);
+          s.loadAvg   = j.value("load", 0.0f);
+          s.procCount = j.value("procs", 0);
           samples.push_back(s);
-        } catch (...) {}
+        } catch (...) {
+          // Skip corrupt history line
+        }
       }
       // Keep only last n samples
       int start = std::max(0, (int)samples.size() - n);
@@ -404,78 +428,181 @@ public:
     }
   }
 
-
   bool saveToFile(const std::string &path) const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    std::ofstream out(path, std::ios::trunc);
+    std::vector<HostState> hostsCopy;
+    std::vector<LogEvent> logCopy;
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      for (const auto &[n, h] : hosts_) {
+        hostsCopy.push_back(h);
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      for (const auto &ev : log_) {
+        logCopy.push_back(ev);
+      }
+    }
+
+    std::string tmpPath = path + ".tmp";
+    std::ofstream out(tmpPath, std::ios::trunc);
     if (!out)
       return false;
-    for (const auto &[n, h] : hosts_) {
-      out << "HOST|" << pipeEncode(h.name) << "|" << pipeEncode(h.ip) << "|"
-          << h.cpu << "|" << h.ram << "|" << h.disk << "|"
-          << (long long)h.lastSeen << "|" << (int)h.status << "\n";
+
+    try {
+      for (const auto &h : hostsCopy) {
+        nlohmann::json j;
+        j["type"] = "host";
+        j["name"] = h.name;
+        j["ip"] = h.ip;
+        j["cpu"] = h.cpu;
+        j["ram"] = h.ram;
+        j["disk"] = h.disk;
+        j["lastSeen"] = static_cast<long long>(h.lastSeen);
+        j["status"] = static_cast<int>(h.status);
+        j["cores"] = h.cores;
+        j["netRxKB"] = h.netRxKB;
+        j["netTxKB"] = h.netTxKB;
+        j["loadAvg"] = h.loadAvg;
+        j["procCount"] = h.procCount;
+        out << j.dump() << "\n";
+      }
+      for (const auto &ev : logCopy) {
+        nlohmann::json j;
+        j["type"] = "log";
+        j["ts"] = static_cast<long long>(ev.ts);
+        j["host"] = ev.host;
+        j["ip"] = ev.ip;
+        j["event"] = static_cast<int>(ev.type);
+        j["cpu"] = ev.cpu;
+        j["ram"] = ev.ram;
+        j["disk"] = ev.disk;
+        j["detail"] = ev.detail;
+        out << j.dump() << "\n";
+      }
+      out.close();
+
+      std::error_code ec;
+      std::filesystem::rename(tmpPath, path, ec);
+      return !ec;
+    } catch (...) {
+      return false;
     }
-    for (const auto &ev : log_) {
-      out << "LOG|" << (long long)ev.ts << "|" << pipeEncode(ev.host) << "|"
-          << pipeEncode(ev.ip) << "|" << (int)ev.type << "|" << ev.cpu << "|"
-          << ev.ram << "|" << ev.disk << "|" << pipeEncode(ev.detail) << "\n";
-    }
-    return true;
   }
 
   bool loadFromFile(const std::string &path) {
-    std::lock_guard<std::mutex> lk(mtx_);
     std::ifstream in(path);
     if (!in)
       return false;
-    hosts_.clear();
-    log_.clear();
+
+    std::vector<HostState> loadedHosts;
+    std::vector<LogEvent> loadedLog;
     std::string line;
+
     while (std::getline(in, line)) {
       if (line.empty())
         continue;
-      std::vector<std::string> cols;
-      std::stringstream ss(line);
-      std::string tok;
-      while (std::getline(ss, tok, '|'))
-        cols.push_back(tok);
 
-      if (cols.size() >= 8 && cols[0] == "HOST") {
-        HostState h;
-        h.name = pipeDecode(cols[1]);
-        h.ip = pipeDecode(cols[2]);
-        try {
-          h.cpu = std::stof(cols[3]);
-          h.ram = std::stof(cols[4]);
-          h.disk = std::stof(cols[5]);
-          h.lastSeen = (time_t)std::stoll(cols[6]);
-          // Restore as STALE regardless of saved status:
-          // real status re-evaluated when new metric arrives
-          h.status = HostStatus::STALE;
-        } catch (...) {
-          // Bad data — skip this host entry
-          continue;
+      // Migration: support old pipe-delimited format
+      if (line.rfind("HOST|", 0) == 0 || line.rfind("LOG|", 0) == 0) {
+        std::vector<std::string> cols;
+        std::stringstream ss(line);
+        std::string tok;
+        while (std::getline(ss, tok, '|'))
+          cols.push_back(tok);
+
+        if (cols.size() >= 8 && cols[0] == "HOST") {
+          HostState h;
+          h.name = pipeDecode(cols[1]);
+          h.ip = pipeDecode(cols[2]);
+          try {
+            h.cpu = std::stof(cols[3]);
+            h.ram = std::stof(cols[4]);
+            h.disk = std::stof(cols[5]);
+            h.lastSeen = (time_t)std::stoll(cols[6]);
+            h.status = HostStatus::STALE;
+          } catch (...) {
+            continue;
+          }
+          h.fd = -1;
+          loadedHosts.push_back(h);
+        } else if (cols.size() >= 9 && cols[0] == "LOG") {
+          LogEvent ev;
+          try {
+            ev.ts = (time_t)std::stoll(cols[1]);
+            ev.host = pipeDecode(cols[2]);
+            ev.ip = pipeDecode(cols[3]);
+            int ti = std::stoi(cols[4]);
+            if (ti < 0 || ti > 4)
+              ti = 0;
+            ev.type = (LogEventType)ti;
+            ev.cpu = std::stof(cols[5]);
+            ev.ram = std::stof(cols[6]);
+            ev.disk = std::stof(cols[7]);
+            ev.detail = pipeDecode(cols[8]);
+            loadedLog.push_back(ev);
+          } catch (...) {
+            continue;
+          }
         }
-        h.fd = -1;
+      } else {
+        // Parse new JSONL format
+        try {
+          auto j = nlohmann::json::parse(line);
+          if (!j.is_object()) continue;
+          std::string type = j.value("type", "");
+          if (type == "host") {
+            HostState h;
+            h.name = j.value("name", "");
+            h.ip = j.value("ip", "");
+            h.cpu = j.value("cpu", 0.0f);
+            h.ram = j.value("ram", 0.0f);
+            h.disk = j.value("disk", 0.0f);
+            h.lastSeen = static_cast<time_t>(j.value("lastSeen", 0LL));
+            h.status = HostStatus::STALE;
+            h.fd = -1;
+            h.netRxKB = j.value("netRxKB", 0.0f);
+            h.netTxKB = j.value("netTxKB", 0.0f);
+            h.loadAvg = j.value("loadAvg", 0.0f);
+            h.procCount = j.value("procCount", 0);
+            if (j.contains("cores") && j["cores"].is_array()) {
+              for (auto& cv : j["cores"]) {
+                if (cv.is_number()) h.cores.push_back(cv.get<float>());
+              }
+              h.coreCount = static_cast<int>(h.cores.size());
+            }
+            loadedHosts.push_back(h);
+          } else if (type == "log") {
+            LogEvent ev;
+            ev.ts = static_cast<time_t>(j.value("ts", 0LL));
+            ev.host = j.value("host", "");
+            ev.ip = j.value("ip", "");
+            int ti = j.value("event", 0);
+            if (ti < 0 || ti > 4) ti = 0;
+            ev.type = static_cast<LogEventType>(ti);
+            ev.cpu = j.value("cpu", 0.0f);
+            ev.ram = j.value("ram", 0.0f);
+            ev.disk = j.value("disk", 0.0f);
+            ev.detail = j.value("detail", "");
+            loadedLog.push_back(ev);
+          }
+        } catch (...) {
+          // Skip corrupt line
+        }
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(hostsMtx_);
+      hosts_.clear();
+      for (const auto &h : loadedHosts) {
         hosts_[h.name] = h;
-      } else if (cols.size() >= 9 && cols[0] == "LOG") {
-        LogEvent ev;
-        try {
-          ev.ts = (time_t)std::stoll(cols[1]);
-          ev.host = pipeDecode(cols[2]);
-          ev.ip = pipeDecode(cols[3]);
-          int ti = std::stoi(cols[4]);
-          // Clamp to valid enum range
-          if (ti < 0 || ti > 4)
-            ti = 0;
-          ev.type = (LogEventType)ti;
-          ev.cpu = std::stof(cols[5]);
-          ev.ram = std::stof(cols[6]);
-          ev.disk = std::stof(cols[7]);
-          ev.detail = pipeDecode(cols[8]);
-        } catch (...) {
-          continue; // Skip bad log entries
-        }
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lk(logMtx_);
+      log_.clear();
+      for (const auto &ev : loadedLog) {
         log_.push_back(ev);
       }
     }
@@ -488,7 +615,8 @@ private:
     if (log_.size() > MAX_LOG_ENTRIES)
       log_.pop_front();
   }
-  mutable std::mutex mtx_;
+  mutable std::mutex hostsMtx_;
+  mutable std::mutex logMtx_;
   std::unordered_map<std::string, HostState> hosts_;
   std::deque<LogEvent> log_;
   std::string historyDir_;

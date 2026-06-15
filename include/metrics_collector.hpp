@@ -187,30 +187,71 @@ inline SysInfo readSysInfo() {
   return s;
 }
 
+struct SampleResult {
+  Sample sample;
+  bool valid = true;
+  std::string error;
+};
+
 // ── Full sample (non-blocking for CPU thanks to AsyncCpuSampler) ─────────────
-inline Sample collectWith(AsyncCpuSampler &cpuSampler,
-                          NetRaw &prevNet,
-                          const std::string &diskPath = "/") {
-  Sample s;
+inline SampleResult collectWith(AsyncCpuSampler &cpuSampler,
+                                NetRaw &prevNet,
+                                const std::string &diskPath = "/") {
+  SampleResult res;
+  Sample& s = res.sample;
+  
+  // CPU
   auto [total, cores] = cpuSampler.read();
   s.cpu = total;
   s.cores = cores;
-  s.ram = ramPercent();
-  s.disk = diskPercent(diskPath);
 
-  // Network delta
-  NetRaw cur = readNetRaw();
-  float deltaRx = (float)(cur.rx >= prevNet.rx ? cur.rx - prevNet.rx : 0);
-  float deltaTx = (float)(cur.tx >= prevNet.tx ? cur.tx - prevNet.tx : 0);
-  s.netRxKB = deltaRx / 1024.0f;
-  s.netTxKB = deltaTx / 1024.0f;
-  prevNet = cur;
+  // RAM
+  std::ifstream fMem("/proc/meminfo");
+  if (!fMem.is_open()) {
+    res.valid = false;
+    res.error += "/proc/meminfo unavailable; ";
+  } else {
+    fMem.close();
+    s.ram = ramPercent();
+  }
 
-  auto si = readSysInfo();
-  s.loadAvg = si.loadAvg;
-  s.procCount = si.procCount;
+  // Disk
+  struct statvfs st;
+  if (statvfs(diskPath.c_str(), &st) != 0) {
+    res.valid = false;
+    res.error += "statvfs failed for " + diskPath + " (" + std::string(strerror(errno)) + "); ";
+  } else {
+    s.disk = diskPercent(diskPath);
+  }
 
-  return s;
+  // Network I/O
+  std::ifstream fNet("/proc/net/dev");
+  if (!fNet.is_open()) {
+    res.valid = false;
+    res.error += "/proc/net/dev unavailable; ";
+  } else {
+    fNet.close();
+    NetRaw cur = readNetRaw();
+    float deltaRx = (float)(cur.rx >= prevNet.rx ? cur.rx - prevNet.rx : 0);
+    float deltaTx = (float)(cur.tx >= prevNet.tx ? cur.tx - prevNet.tx : 0);
+    s.netRxKB = deltaRx / 1024.0f;
+    s.netTxKB = deltaTx / 1024.0f;
+    prevNet = cur;
+  }
+
+  // Sys Info
+  std::ifstream fAvg("/proc/loadavg");
+  if (!fAvg.is_open()) {
+    res.valid = false;
+    res.error += "/proc/loadavg unavailable; ";
+  } else {
+    fAvg.close();
+    auto si = readSysInfo();
+    s.loadAvg = si.loadAvg;
+    s.procCount = si.procCount;
+  }
+
+  return res;
 }
 
 } // namespace monitor::metrics

@@ -51,3 +51,4 @@ data/
 agent
 monitor_server
 viewer_cli
+test/unit_test

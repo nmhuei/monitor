@@ -14,7 +14,7 @@
 #include "../../include/ansi_viewer.hpp"
 #include "../../include/dashboard.hpp"
 #include "../../include/http_api.hpp"
-#include "../../include/json_helper.hpp"
+#include "../../include/json_wrapper.hpp"
 #include "../../include/logger.hpp"
 #include "../../include/metrics_store.hpp"
 #include "../../include/net_framing.hpp"
@@ -133,19 +133,60 @@ static void spawnThread(std::function<void()> fn) {
   g_threads.emplace_back(std::move(fn));
 }
 
+// Thread tracker for dynamically spawned client handlers
+struct TrackedThread {
+  std::thread t;
+  std::shared_ptr<std::atomic<bool>> finished;
+};
+static std::mutex g_clientMtx;
+static std::vector<TrackedThread> g_clientThreads;
+
+static void spawnClient(std::function<void()> fn) {
+  std::lock_guard<std::mutex> lk(g_clientMtx);
+  for (auto it = g_clientThreads.begin(); it != g_clientThreads.end(); ) {
+    if (it->finished->load()) {
+      if (it->t.joinable()) it->t.join();
+      it = g_clientThreads.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  auto finished = std::make_shared<std::atomic<bool>>(false);
+  std::thread t([fn, finished]() {
+    fn();
+    finished->store(true);
+  });
+  g_clientThreads.push_back({std::move(t), finished});
+}
+
 // Join all registered threads (call after g_running = false)
 static void joinAllThreads() {
   std::lock_guard<std::mutex> lk(g_threadMtx);
   for (auto &t : g_threads)
     if (t.joinable()) t.join();
   g_threads.clear();
+
+  std::lock_guard<std::mutex> lk2(g_clientMtx);
+  for (auto &tt : g_clientThreads) {
+    if (tt.t.joinable()) tt.t.join();
+  }
+  g_clientThreads.clear();
+}
+
+inline bool timingSafeCompare(const std::string &a, const std::string &b) {
+  if (a.size() != b.size()) return false;
+  volatile char result = 0;
+  for (size_t i = 0; i < a.size(); ++i) {
+    result |= (a[i] ^ b[i]);
+  }
+  return result == 0;
 }
 
 // ── Client handler ───────────────────────────────────────────────────────────
 static void handleClient(int fd, std::string ip) {
   net::setRecvTimeout(fd, RECV_TIMEOUT_SEC);
   std::string hostName;
-  bool authenticated = g_cfg.authToken.empty();
+  bool authenticated = false; // Start unauthenticated to handle handshake
 
   while (g_running) {
     std::string msg = net::recvMsg(fd);
@@ -156,16 +197,47 @@ static void handleClient(int fd, std::string ip) {
 
       // ── Auth check ──────────────────────────────────────────────────────
       if (!authenticated) {
-        bool ok = obj.count("auth") && obj["auth"].str == g_cfg.authToken;
-        if (!ok) {
-          net::sendMsg(fd, "{\"error\":\"auth_failed\"}");
-          LOG_WARN("auth_failed from " + ip);
+        if (obj.count("type") && obj["type"].str == "auth") {
+          std::string token = obj.count("token") ? obj["token"].str : "";
+          bool ok = true;
+          if (!g_cfg.authToken.empty()) {
+            ok = timingSafeCompare(token, g_cfg.authToken);
+          }
+          if (ok) {
+            net::sendMsg(fd, "{\"ok\":true}");
+            authenticated = true;
+            continue;
+          } else {
+            net::sendMsg(fd, "{\"error\":\"auth_failed\"}");
+            LOG_WARN("auth_failed from " + ip);
+            g_stats.msgsDropped++;
+            close(fd);
+            return;
+          }
+        } else if (obj.count("host")) {
+          // Legacy agent compatibility: check auth token inside metrics payload
+          std::string token = obj.count("auth") ? obj["auth"].str : "";
+          bool ok = true;
+          if (!g_cfg.authToken.empty()) {
+            ok = timingSafeCompare(token, g_cfg.authToken);
+          }
+          if (ok) {
+            authenticated = true;
+            // Do NOT continue, process this payload directly!
+          } else {
+            net::sendMsg(fd, "{\"error\":\"auth_failed\"}");
+            LOG_WARN("auth_failed (legacy) from " + ip);
+            g_stats.msgsDropped++;
+            close(fd);
+            return;
+          }
+        } else {
+          net::sendMsg(fd, "{\"error\":\"expected_auth_handshake\"}");
+          LOG_WARN("expected_auth_handshake from " + ip);
           g_stats.msgsDropped++;
           close(fd);
           return;
         }
-        authenticated = true;
-        continue; // auth message only, no metric yet
       }
 
       // ── Heartbeat / ping ────────────────────────────────────────────────
@@ -369,9 +441,8 @@ static void acceptLoop(int serverFd) {
       close(fd);
       continue;
     }
-    // Detach individual client handler threads — OK because each
-    // cleans up its own fd. Server lifecycle managed separately.
-    std::thread(handleClient, fd, ip).detach();
+    // Spawn client thread and register it so we can join it on shutdown
+    spawnClient([fd, ip]() { handleClient(fd, ip); });
   }
 }
 
@@ -383,7 +454,7 @@ static void viewerAcceptLoop(int vfd) {
       if (errno == EINTR || errno == EAGAIN) continue;
       break;
     }
-    std::thread(viewerHandler, fd).detach();
+    spawnClient([fd]() { viewerHandler(fd); });
   }
 }
 
