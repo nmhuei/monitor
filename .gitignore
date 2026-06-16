@@ -52,3 +52,8 @@ agent
 monitor_server
 viewer_cli
 test/unit_test
+
+# Agent CLI skills & locks
+.agents/
+skills-lock.json
+*.zip
